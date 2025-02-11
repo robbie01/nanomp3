@@ -5157,7 +5157,7 @@ unsafe fn L3_decode(
     }
     if (*h).header[3 as i32 as usize] as i32 & 0x10 as i32 != 0 {
         L3_intensity_stereo(
-            ((*s).grbuf[0 as i32 as usize]).as_mut_ptr(),
+            (*s).grbuf.as_flattened_mut().as_mut_ptr(),
             ((*s).ist_pos[1 as i32 as usize]).as_mut_ptr(),
             gr_info,
             ((*h).header).as_mut_ptr(),
@@ -5166,7 +5166,7 @@ unsafe fn L3_decode(
         == 0x60 as i32
     {
         L3_midside_stereo(
-            ((*s).grbuf[0 as i32 as usize]).as_mut_ptr(),
+            (*s).grbuf.as_flattened_mut().as_mut_ptr(),
             576 as i32,
         );
     }
@@ -5811,13 +5811,13 @@ unsafe fn mp3d_synth(
         let mut vz: *mut f32 = zlin
             .offset(
                 (4 as i32 * i - 0 as i32 * 64 as i32) as isize,
-            ) as *mut f32;
+            );
         let mut vy: *mut f32 = zlin
             .offset(
                 (4 as i32 * i
                     - (15 as i32 - 0 as i32) * 64 as i32)
                     as isize,
-            ) as *mut f32;
+            );
         j = 0 as i32;
         while j < 4 as i32 {
             b[j as usize] = *vz.offset(j as isize) * w1 + *vy.offset(j as isize) * w0;
@@ -5834,13 +5834,13 @@ unsafe fn mp3d_synth(
         let mut vz_0: *mut f32 = zlin
             .offset(
                 (4 as i32 * i - 1 as i32 * 64 as i32) as isize,
-            ) as *mut f32;
+            );
         let mut vy_0: *mut f32 = zlin
             .offset(
                 (4 as i32 * i
                     - (15 as i32 - 1 as i32) * 64 as i32)
                     as isize,
-            ) as *mut f32;
+            );
         j_0 = 0 as i32;
         while j_0 < 4 as i32 {
             b[j_0 as usize]
@@ -5859,13 +5859,13 @@ unsafe fn mp3d_synth(
         let mut vz_1: *mut f32 = zlin
             .offset(
                 (4 as i32 * i - 2 as i32 * 64 as i32) as isize,
-            ) as *mut f32;
+            );
         let mut vy_1: *mut f32 = zlin
             .offset(
                 (4 as i32 * i
                     - (15 as i32 - 2 as i32) * 64 as i32)
                     as isize,
-            ) as *mut f32;
+            );
         j_1 = 0 as i32;
         while j_1 < 4 as i32 {
             b[j_1 as usize]
@@ -5884,13 +5884,13 @@ unsafe fn mp3d_synth(
         let mut vz_2: *mut f32 = zlin
             .offset(
                 (4 as i32 * i - 3 as i32 * 64 as i32) as isize,
-            ) as *mut f32;
+            );
         let mut vy_2: *mut f32 = zlin
             .offset(
                 (4 as i32 * i
                     - (15 as i32 - 3 as i32) * 64 as i32)
                     as isize,
-            ) as *mut f32;
+            );
         j_2 = 0 as i32;
         while j_2 < 4 as i32 {
             b[j_2 as usize]
@@ -5909,13 +5909,13 @@ unsafe fn mp3d_synth(
         let mut vz_3: *mut f32 = zlin
             .offset(
                 (4 as i32 * i - 4 as i32 * 64 as i32) as isize,
-            ) as *mut f32;
+            );
         let mut vy_3: *mut f32 = zlin
             .offset(
                 (4 as i32 * i
                     - (15 as i32 - 4 as i32) * 64 as i32)
                     as isize,
-            ) as *mut f32;
+            );
         j_3 = 0 as i32;
         while j_3 < 4 as i32 {
             b[j_3 as usize]
@@ -5934,13 +5934,13 @@ unsafe fn mp3d_synth(
         let mut vz_4: *mut f32 = zlin
             .offset(
                 (4 as i32 * i - 5 as i32 * 64 as i32) as isize,
-            ) as *mut f32;
+            );
         let mut vy_4: *mut f32 = zlin
             .offset(
                 (4 as i32 * i
                     - (15 as i32 - 5 as i32) * 64 as i32)
                     as isize,
-            ) as *mut f32;
+            );
         j_4 = 0 as i32;
         while j_4 < 4 as i32 {
             b[j_4 as usize]
@@ -5959,13 +5959,13 @@ unsafe fn mp3d_synth(
         let mut vz_5: *mut f32 = zlin
             .offset(
                 (4 as i32 * i - 6 as i32 * 64 as i32) as isize,
-            ) as *mut f32;
+            );
         let mut vy_5: *mut f32 = zlin
             .offset(
                 (4 as i32 * i
                     - (15 as i32 - 6 as i32) * 64 as i32)
                     as isize,
-            ) as *mut f32;
+            );
         j_5 = 0 as i32;
         while j_5 < 4 as i32 {
             b[j_5 as usize]
@@ -5984,13 +5984,13 @@ unsafe fn mp3d_synth(
         let mut vz_6: *mut f32 = zlin
             .offset(
                 (4 as i32 * i - 7 as i32 * 64 as i32) as isize,
-            ) as *mut f32;
+            );
         let mut vy_6: *mut f32 = zlin
             .offset(
                 (4 as i32 * i
                     - (15 as i32 - 7 as i32) * 64 as i32)
                     as isize,
-            ) as *mut f32;
+            );
         j_6 = 0 as i32;
         while j_6 < 4 as i32 {
             b[j_6 as usize]
