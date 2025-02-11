@@ -7,16 +7,9 @@
     unused_mut
 )]
 
+#[inline(always)]
 unsafe fn memcpy(dst: *mut (), src: *const (), count: usize) {
     core::ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, count);
-}
-
-unsafe fn memmove(dst: *mut (), src: *const (), count: usize) {
-    core::ptr::copy(src as *const u8, dst as *mut u8, count);
-}
-
-unsafe fn memset(dst: *mut (), val: i32, count: usize) {
-    core::ptr::write_bytes(dst as *mut u8, val as u8, count);
 }
 
 type int16_t = i16;
@@ -1367,12 +1360,8 @@ unsafe fn L3_read_scalefactors(
         } else {
             let mut bits: i32 = *scf_size.offset(i as isize) as i32;
             if bits == 0 {
-                memset(scf as *mut (), 0 as i32, cnt as usize);
-                memset(
-                    ist_pos as *mut (),
-                    0 as i32,
-                    cnt as usize,
-                );
+                core::ptr::write_bytes(scf, 0, cnt as usize);
+                core::ptr::write_bytes(ist_pos, 0, cnt as usize);
             } else {
                 let mut max_scf: i32 = if scfsi < 0 as i32 {
                     ((1 as i32) << bits) - 1 as i32
@@ -5095,9 +5084,9 @@ unsafe fn L3_save_reservoir(
         remains = 511 as i32;
     }
     if remains > 0 as i32 {
-        memmove(
-            ((*h).reserv_buf).as_mut_ptr() as *mut (),
+        core::ptr::copy(
             ((*s).maindata).as_mut_ptr().offset(pos as isize) as *const (),
+            ((*h).reserv_buf).as_mut_ptr() as *mut (),
             remains as usize,
         );
     }
@@ -5204,7 +5193,7 @@ unsafe fn L3_decode(
                 ((*s).grbuf[ch as usize])
                     .as_mut_ptr()
                     .offset((n_long_bands * 18 as i32) as isize),
-                ((*s).syn[0 as i32 as usize]).as_mut_ptr(),
+                (*s).syn.as_flattened_mut().as_mut_ptr(),
                 ((*gr_info).sfbtab).offset((*gr_info).n_long_sfb as i32 as isize),
             );
         }
@@ -5251,9 +5240,9 @@ unsafe fn mp3d_DCT_II(mut grbuf: *mut f32, mut n: i32) {
     let mut k: i32 = 0 as i32;
     while k < n {
         let mut t: [[f32; 8]; 4] = [[0.; 8]; 4];
-        let mut x: *mut f32 = 0 as *mut f32;
+        let mut x: *mut f32 = core::ptr::null_mut();
         let mut y: *mut f32 = grbuf.offset(k as isize);
-        x = (t[0 as i32 as usize]).as_mut_ptr();
+        x = t.as_flattened_mut().as_mut_ptr();
         i = 0 as i32;
         while i < 8 as i32 {
             let mut x0: f32 = *y.offset((i * 18 as i32) as isize);
@@ -5284,7 +5273,7 @@ unsafe fn mp3d_DCT_II(mut grbuf: *mut f32, mut n: i32) {
             i += 1;
             x = x.offset(1);
         }
-        x = (t[0 as i32 as usize]).as_mut_ptr();
+        x = t.as_flattened_mut().as_mut_ptr();
         i = 0 as i32;
         while i < 4 as i32 {
             let mut x0_0: f32 = *x.offset(0 as i32 as isize);
@@ -5819,11 +5808,11 @@ unsafe fn mp3d_synth(
         let fresh23 = w;
         w = w.offset(1);
         let mut w1: f32 = *fresh23;
-        let mut vz: *mut f32 = &mut *zlin
+        let mut vz: *mut f32 = zlin
             .offset(
                 (4 as i32 * i - 0 as i32 * 64 as i32) as isize,
             ) as *mut f32;
-        let mut vy: *mut f32 = &mut *zlin
+        let mut vy: *mut f32 = zlin
             .offset(
                 (4 as i32 * i
                     - (15 as i32 - 0 as i32) * 64 as i32)
@@ -5842,11 +5831,11 @@ unsafe fn mp3d_synth(
         let fresh25 = w;
         w = w.offset(1);
         let mut w1_0: f32 = *fresh25;
-        let mut vz_0: *mut f32 = &mut *zlin
+        let mut vz_0: *mut f32 = zlin
             .offset(
                 (4 as i32 * i - 1 as i32 * 64 as i32) as isize,
             ) as *mut f32;
-        let mut vy_0: *mut f32 = &mut *zlin
+        let mut vy_0: *mut f32 = zlin
             .offset(
                 (4 as i32 * i
                     - (15 as i32 - 1 as i32) * 64 as i32)
@@ -5867,11 +5856,11 @@ unsafe fn mp3d_synth(
         let fresh27 = w;
         w = w.offset(1);
         let mut w1_1: f32 = *fresh27;
-        let mut vz_1: *mut f32 = &mut *zlin
+        let mut vz_1: *mut f32 = zlin
             .offset(
                 (4 as i32 * i - 2 as i32 * 64 as i32) as isize,
             ) as *mut f32;
-        let mut vy_1: *mut f32 = &mut *zlin
+        let mut vy_1: *mut f32 = zlin
             .offset(
                 (4 as i32 * i
                     - (15 as i32 - 2 as i32) * 64 as i32)
@@ -5892,11 +5881,11 @@ unsafe fn mp3d_synth(
         let fresh29 = w;
         w = w.offset(1);
         let mut w1_2: f32 = *fresh29;
-        let mut vz_2: *mut f32 = &mut *zlin
+        let mut vz_2: *mut f32 = zlin
             .offset(
                 (4 as i32 * i - 3 as i32 * 64 as i32) as isize,
             ) as *mut f32;
-        let mut vy_2: *mut f32 = &mut *zlin
+        let mut vy_2: *mut f32 = zlin
             .offset(
                 (4 as i32 * i
                     - (15 as i32 - 3 as i32) * 64 as i32)
@@ -5917,11 +5906,11 @@ unsafe fn mp3d_synth(
         let fresh31 = w;
         w = w.offset(1);
         let mut w1_3: f32 = *fresh31;
-        let mut vz_3: *mut f32 = &mut *zlin
+        let mut vz_3: *mut f32 = zlin
             .offset(
                 (4 as i32 * i - 4 as i32 * 64 as i32) as isize,
             ) as *mut f32;
-        let mut vy_3: *mut f32 = &mut *zlin
+        let mut vy_3: *mut f32 = zlin
             .offset(
                 (4 as i32 * i
                     - (15 as i32 - 4 as i32) * 64 as i32)
@@ -5942,11 +5931,11 @@ unsafe fn mp3d_synth(
         let fresh33 = w;
         w = w.offset(1);
         let mut w1_4: f32 = *fresh33;
-        let mut vz_4: *mut f32 = &mut *zlin
+        let mut vz_4: *mut f32 = zlin
             .offset(
                 (4 as i32 * i - 5 as i32 * 64 as i32) as isize,
             ) as *mut f32;
-        let mut vy_4: *mut f32 = &mut *zlin
+        let mut vy_4: *mut f32 = zlin
             .offset(
                 (4 as i32 * i
                     - (15 as i32 - 5 as i32) * 64 as i32)
@@ -5967,11 +5956,11 @@ unsafe fn mp3d_synth(
         let fresh35 = w;
         w = w.offset(1);
         let mut w1_5: f32 = *fresh35;
-        let mut vz_5: *mut f32 = &mut *zlin
+        let mut vz_5: *mut f32 = zlin
             .offset(
                 (4 as i32 * i - 6 as i32 * 64 as i32) as isize,
             ) as *mut f32;
-        let mut vy_5: *mut f32 = &mut *zlin
+        let mut vy_5: *mut f32 = zlin
             .offset(
                 (4 as i32 * i
                     - (15 as i32 - 6 as i32) * 64 as i32)
@@ -5992,11 +5981,11 @@ unsafe fn mp3d_synth(
         let fresh37 = w;
         w = w.offset(1);
         let mut w1_6: f32 = *fresh37;
-        let mut vz_6: *mut f32 = &mut *zlin
+        let mut vz_6: *mut f32 = zlin
             .offset(
                 (4 as i32 * i - 7 as i32 * 64 as i32) as isize,
             ) as *mut f32;
-        let mut vy_6: *mut f32 = &mut *zlin
+        let mut vy_6: *mut f32 = zlin
             .offset(
                 (4 as i32 * i
                     - (15 as i32 - 7 as i32) * 64 as i32)
@@ -6172,21 +6161,21 @@ pub unsafe fn mp3dec_decode_frame(
     let mut igr: i32 = 0;
     let mut frame_size: i32 = 0 as i32;
     let mut success: i32 = 1 as i32;
-    let mut hdr: *const uint8_t = 0 as *const uint8_t;
+    let mut hdr: *const uint8_t = core::ptr::null();
     let mut bs_frame: [bs_t; 1] = [bs_t {
-        buf: 0 as *const uint8_t,
+        buf: core::ptr::null(),
         pos: 0,
         limit: 0,
     }; 1];
     let mut scratch: mp3dec_scratch_t = mp3dec_scratch_t {
         bs: bs_t {
-            buf: 0 as *const uint8_t,
+            buf: core::ptr::null(),
             pos: 0,
             limit: 0,
         },
         maindata: [0; 2815],
         gr_info: [L3_gr_info_t {
-            sfbtab: 0 as *const uint8_t,
+            sfbtab: core::ptr::null(),
             part_23_length: 0,
             big_values: 0,
             scalefac_compress: 0,
@@ -6221,11 +6210,7 @@ pub unsafe fn mp3dec_decode_frame(
         }
     }
     if frame_size == 0 {
-        memset(
-            dec as *mut (),
-            0 as i32,
-            ::core::mem::size_of::<mp3dec_t>() as usize,
-        );
+        core::ptr::write_bytes(dec, 0, 1);
         i = mp3d_find_frame(
             mp3,
             mp3_bytes,
@@ -6285,7 +6270,7 @@ pub unsafe fn mp3dec_decode_frame(
         success = L3_restore_reservoir(
             dec,
             bs_frame.as_mut_ptr(),
-            &mut scratch,
+            &raw mut scratch,
             main_data_begin,
         );
         if success != 0 {
@@ -6299,18 +6284,12 @@ pub unsafe fn mp3dec_decode_frame(
                     1 as i32
                 })
             {
-                memset(
-                    (scratch.grbuf[0 as i32 as usize]).as_mut_ptr()
-                        as *mut (),
-                    0 as i32,
-                    ((576 as i32 * 2 as i32) as usize)
-                        .wrapping_mul(
-                            ::core::mem::size_of::<f32>() as usize,
-                        ),
-                );
+                for ref mut buf in scratch.grbuf {
+                    buf.fill(0.);
+                }
                 L3_decode(
                     dec,
-                    &mut scratch,
+                    &raw mut scratch,
                     (scratch.gr_info)
                         .as_mut_ptr()
                         .offset((igr * (*info).channels) as isize),
@@ -6318,17 +6297,17 @@ pub unsafe fn mp3dec_decode_frame(
                 );
                 mp3d_synth_granule(
                     ((*dec).qmf_state).as_mut_ptr(),
-                    (scratch.grbuf[0 as i32 as usize]).as_mut_ptr(),
+                    scratch.grbuf.as_flattened_mut().as_mut_ptr(),
                     18 as i32,
                     (*info).channels,
                     pcm,
-                    (scratch.syn[0 as i32 as usize]).as_mut_ptr(),
+                    scratch.syn.as_flattened_mut().as_mut_ptr(),
                 );
                 igr += 1;
                 pcm = pcm.offset((576 as i32 * (*info).channels) as isize);
             }
         }
-        L3_save_reservoir(dec, &mut scratch);
+        L3_save_reservoir(dec, &raw mut scratch);
     } else {
         return 0 as i32
     }
