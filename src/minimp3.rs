@@ -5085,8 +5085,8 @@ unsafe fn L3_save_reservoir(
     }
     if remains > 0 as i32 {
         core::ptr::copy(
-            ((*s).maindata).as_mut_ptr().offset(pos as isize) as *const (),
-            ((*h).reserv_buf).as_mut_ptr() as *mut (),
+            ((*s).maindata).as_mut_ptr().offset(pos as isize),
+            ((*h).reserv_buf).as_mut_ptr(),
             remains as usize,
         );
     }
@@ -6284,9 +6284,7 @@ pub unsafe fn mp3dec_decode_frame(
                     1 as i32
                 })
             {
-                for ref mut buf in scratch.grbuf {
-                    buf.fill(0.);
-                }
+                core::ptr::write_bytes(&raw mut scratch.grbuf, 0, 1);
                 L3_decode(
                     dec,
                     &raw mut scratch,
