@@ -1,6 +1,6 @@
 #![no_std]
 
-use core::mem::MaybeUninit;
+use minimp3::mp3dec_frame_info_t;
 
 mod minimp3;
 
@@ -30,9 +30,7 @@ pub struct FrameInfo {
 
 impl Decoder {
     pub const fn new() -> Self {
-        let mut dec = MaybeUninit::zeroed();
-        unsafe { minimp3::mp3dec_init(dec.as_mut_ptr()); }
-        Self(unsafe { dec.assume_init() })
+        Self(minimp3::mp3dec_t::new())
     }
 
     // Decode MP3 data into a buffer, returning the amount of MP3 data consumed and any data on decoded samples.
@@ -43,7 +41,7 @@ impl Decoder {
             panic!("pcm buffer too small");
         }
 
-        let mut info = unsafe { MaybeUninit::zeroed().assume_init() };
+        let mut info = mp3dec_frame_info_t::default();
 
         let samples = unsafe { minimp3::mp3dec_decode_frame(
             &mut self.0,

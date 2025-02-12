@@ -17,7 +17,7 @@ type int32_t = i32;
 type uint8_t = u8;
 type uint16_t = u16;
 type uint32_t = u32;
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 #[repr(C)]
 pub struct mp3dec_frame_info_t {
     pub frame_bytes: i32,
@@ -37,6 +37,20 @@ pub struct mp3dec_t {
     header: [u8; 4],
     reserv_buf: [u8; 511],
 }
+
+impl mp3dec_t {
+    pub const fn new() -> Self {
+        Self {
+            mdct_overlap: [[0.; 288]; 2],
+            qmf_state: [0.; 960],
+            reserv: 0,
+            free_format_bytes: 0,
+            header: [0; 4],
+            reserv_buf: [0; 511]
+        }
+    }
+}
+
 type mp3d_sample_t = int16_t;
 #[derive(Copy, Clone)]
 #[repr(C)]
