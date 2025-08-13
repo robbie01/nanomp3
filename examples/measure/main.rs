@@ -26,7 +26,7 @@ fn main() {
     let mut decoder = nanomp3::Decoder::new();
     let mut mp3_buffer = Buffer::<{128*MIN_BUFFER_SIZE}>::new();
     let mut eos = false;
-    let mut pcm_buffer = [0; nanomp3::MAX_SAMPLES_PER_FRAME];
+    let mut pcm_buffer = [0f32; nanomp3::MAX_SAMPLES_PER_FRAME];
 
     let mut time = 0.;
     
@@ -65,6 +65,7 @@ fn main() {
                     eos = true;
                 }
                 mp3_buffer.expand(n);
+                println!("{}", mp3_buffer.len());
 
                 if eos || mp3_buffer.len() >= MIN_BUFFER_SIZE {
                     break;

@@ -51,7 +51,7 @@ impl mp3dec_t {
     }
 }
 
-type mp3d_sample_t = int16_t;
+type mp3d_sample_t = f32;
 #[derive(Copy, Clone)]
 #[repr(C)]
 struct mp3dec_scratch_t {
@@ -5377,18 +5377,11 @@ unsafe fn mp3d_DCT_II(mut grbuf: *mut f32, mut n: i32) {
         k += 1;
     }
 }
-unsafe fn mp3d_scale_pcm(mut sample: f32) -> int16_t {
-    if sample as f64 >= 32766.5f64 {
-        return 32767 as i32 as int16_t;
-    }
-    if sample as f64 <= -32767.5f64 {
-        return -(32768 as i32) as int16_t;
-    }
-    let mut s: int16_t = (sample + 0.5f32) as int16_t;
-    s = (s as i32 - ((s as i32) < 0 as i32) as i32)
-        as int16_t;
-    return s;
+
+fn mp3d_scale_pcm(sample: f32) -> f32 {
+    sample * (1f32/32768f32)
 }
+
 unsafe fn mp3d_synth_pair(
     mut pcm: *mut mp3d_sample_t,
     mut nch: i32,

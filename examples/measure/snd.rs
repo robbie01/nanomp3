@@ -16,6 +16,14 @@ impl SampleFormat for i16 {
     }
 }
 
+impl SampleFormat for f32 {
+    const CODE: u32 = 6;
+
+    fn write_sample<W: Write>(self, writer: &mut W) -> io::Result<()> {
+        writer.write_f32::<BigEndian>(self)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Initial,

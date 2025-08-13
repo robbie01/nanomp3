@@ -1,11 +1,11 @@
 #![no_std]
 
-use minimp3::mp3dec_frame_info_t;
-
 mod minimp3;
 
+/// The minimum length of the PCM output buffer.
 pub const MAX_SAMPLES_PER_FRAME: usize = 1152*2;
 
+/// The core MP3 decoder, with no internal buffering.
 pub struct Decoder(minimp3::mp3dec_t);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -15,6 +15,7 @@ pub enum Channels {
 }
 
 impl Channels {
+    /// Returns the corresponding number of channels for `self`.
     pub fn num(self) -> u8 {
         self as u8
     }
@@ -29,19 +30,21 @@ pub struct FrameInfo {
 }
 
 impl Decoder {
+    /// Instantiates the `Decoder`.
     pub const fn new() -> Self {
         Self(minimp3::mp3dec_t::new())
     }
 
-    // Decode MP3 data into a buffer, returning the amount of MP3 data consumed and any data on decoded samples.
-    // mp3 should contain at least several frames worth of data (16KB recommended) to avoid artifacting.
-    // pcm MUST be at least MAX_SAMPLES_PER_FRAME long.
-    pub fn decode(&mut self, mp3: &[u8], pcm: &mut [i16]) -> (usize, Option<FrameInfo>) {
-        if pcm.len() < MAX_SAMPLES_PER_FRAME {
-            panic!("pcm buffer too small");
-        }
+    /// Decode MP3 data into a buffer, returning the amount of MP3 data consumed and info about decoded samples.
+    /// `mp3` should contain at least several frames worth of data at any given time (16KB recommended) to avoid artifacting.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if `pcm` is less than `MAX_SAMPLES_PER_FRAME` long.
+    pub fn decode(&mut self, mp3: &[u8], pcm: &mut [f32]) -> (usize, Option<FrameInfo>) {
+        assert!(pcm.len() >= MAX_SAMPLES_PER_FRAME, "pcm buffer too small");
 
-        let mut info = mp3dec_frame_info_t::default();
+        let mut info = minimp3::mp3dec_frame_info_t::default();
 
         let samples = unsafe { minimp3::mp3dec_decode_frame(
             &mut self.0,
