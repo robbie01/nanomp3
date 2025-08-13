@@ -7,7 +7,9 @@ use buffer::Buffer;
 
 const MIN_BUFFER_SIZE: usize = 16384;
 
-// Convert an MP3 file to a Sun Au (.snd) file
+/// Convert an MP3 file to a Sun Au (.snd) file.
+/// 
+/// Note: this example is *not* correct for files with a variable sample rate or number of channels.
 fn main() {
     let (mut file, dest) = match (env::args_os().nth(1), env::args_os().nth(2)) {
         (Some(arg1), Some(arg2)) => (

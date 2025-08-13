@@ -8,6 +8,8 @@ pub const MAX_SAMPLES_PER_FRAME: usize = 1152*2;
 /// The core MP3 decoder, with no internal buffering.
 pub struct Decoder(minimp3::mp3dec_t);
 
+
+/// The channel formats that may be encoded in an MP3 frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Channels {
     Mono = 1,
@@ -21,26 +23,31 @@ impl Channels {
     }
 }
 
+/// Information about the frame decoded by [`Decoder::decode`]
 #[derive(Debug, Clone, Copy)]
 pub struct FrameInfo {
+    /// The number of PCM samples produced.
     pub samples_produced: usize,
+    /// The number of channels in this frame.
     pub channels: Channels,
+    /// Sample rate of this frame, in Hz.
     pub sample_rate: u32,
-    pub bitrate_kbps: u32
+    /// The current MP3 bit rate, in kilobits per second.
+    pub bitrate: u32
 }
 
 impl Decoder {
-    /// Instantiates the `Decoder`.
+    /// Instantiates a `Decoder`.
     pub const fn new() -> Self {
         Self(minimp3::mp3dec_t::new())
     }
 
     /// Decode MP3 data into a buffer, returning the amount of MP3 data consumed and info about decoded samples.
-    /// `mp3` should contain at least several frames worth of data at any given time (16KB recommended) to avoid artifacting.
+    /// `mp3` should contain at least several frames worth of data at any given time (16KiB recommended) to avoid artifacting.
     /// 
     /// # Panics
     /// 
-    /// Panics if `pcm` is less than `MAX_SAMPLES_PER_FRAME` long.
+    /// Panics if `pcm` is less than [`MAX_SAMPLES_PER_FRAME`] long.
     pub fn decode(&mut self, mp3: &[u8], pcm: &mut [f32]) -> (usize, Option<FrameInfo>) {
         assert!(pcm.len() >= MAX_SAMPLES_PER_FRAME, "pcm buffer too small");
 
@@ -64,7 +71,7 @@ impl Decoder {
                     _ => unreachable!()
                 },
                 sample_rate: info.hz.try_into().unwrap(),
-                bitrate_kbps: info.bitrate_kbps.try_into().unwrap()
+                bitrate: info.bitrate_kbps.try_into().unwrap()
             })
         )
     }
