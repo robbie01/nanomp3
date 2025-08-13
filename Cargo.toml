@@ -1,13 +1,14 @@
 [package]
 name = "nanomp3"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 description = "Pure Rust no_std MP3 decoder. Based on minimp3"
+documentation = "https://docs.rs/nanomp3"
 repository = "https://github.com/robbie01/nanomp3"
 authors = ["Robert B. Langer <robbie@sohio.net>"]
-categories = ["multimedia", "multimedia::audio", "multimedia::encoding", "no-std"]
+categories = ["multimedia", "multimedia::audio", "multimedia::encoding", "no-std", "no-std::no-alloc"]
 keywords = ["audio", "codec", "decoder", "mp3", "mpeg"]
 
 [dev-dependencies]
