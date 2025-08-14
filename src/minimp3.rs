@@ -94,15 +94,15 @@ fn bs_init(
     bs.pos = 0 as i32;
     bs.limit = bytes * 8 as i32;
 }
-unsafe fn get_bits(mut bs: *mut bs_t, mut n: i32) -> u32 {
+unsafe fn get_bits(mut bs: &mut bs_t, mut n: i32) -> u32 {
     let mut next: u32 = 0;
     let mut cache: u32 = 0 as i32 as u32;
-    let mut s: u32 = ((*bs).pos & 7 as i32) as u32;
+    let mut s: u32 = (bs.pos & 7 as i32) as u32;
     let mut shl: i32 = (n as u32).wrapping_add(s) as i32;
-    let mut p: *const u8 = ((*bs).buf)
-        .offset(((*bs).pos >> 3 as i32) as isize);
-    (*bs).pos += n;
-    if (*bs).pos > (*bs).limit {
+    let mut p: *const u8 = (bs.buf)
+        .offset((bs.pos >> 3 as i32) as isize);
+    bs.pos += n;
+    if bs.pos > bs.limit {
         return 0 as i32 as u32;
     }
     let fresh0 = p;
@@ -321,7 +321,7 @@ unsafe fn hdr_padding(mut h: *const u8) -> i32 {
     };
 }
 unsafe fn L3_read_side_info(
-    mut bs: *mut bs_t,
+    bs: &mut bs_t,
     mut gr: *mut L3_gr_info_t,
     mut hdr: *const u8,
 ) -> i32 {
@@ -1342,7 +1342,7 @@ unsafe fn L3_read_side_info(
             break;
         }
     }
-    if part_23_sum + (*bs).pos > (*bs).limit + main_data_begin * 8 as i32 {
+    if part_23_sum + bs.pos > bs.limit + main_data_begin * 8 as i32 {
         return -(1 as i32);
     }
     return main_data_begin;
@@ -1352,7 +1352,7 @@ unsafe fn L3_read_scalefactors(
     mut ist_pos: *mut u8,
     mut scf_size: *const u8,
     mut scf_count: *const u8,
-    mut bitbuf: *mut bs_t,
+    bitbuf: &mut bs_t,
     mut scfsi: i32,
 ) {
     let mut i: i32 = 0;
@@ -1432,7 +1432,7 @@ unsafe fn L3_ldexp_q2(
 unsafe fn L3_decode_scalefactors(
     mut hdr: *const u8,
     mut ist_pos: *mut u8,
-    mut bs: *mut bs_t,
+    bs: &mut bs_t,
     mut gr: *const L3_gr_info_t,
     mut scf: *mut f32,
     mut ch: i32,
@@ -1861,7 +1861,7 @@ unsafe fn L3_pow_43(mut x: i32) -> f32 {
 }
 unsafe fn L3_huffman(
     mut dst: *mut f32,
-    mut bs: *mut bs_t,
+    bs: &mut bs_t,
     mut gr_info: *const L3_gr_info_t,
     mut scf: *const f32,
     mut layer3gr_limit: i32,
@@ -4152,8 +4152,8 @@ unsafe fn L3_huffman(
     let mut ireg: i32 = 0 as i32;
     let mut big_val_cnt: i32 = (*gr_info).big_values as i32;
     let mut sfb: *const u8 = (*gr_info).sfbtab;
-    let mut bs_next_ptr: *const u8 = ((*bs).buf)
-        .offset(((*bs).pos / 8 as i32) as isize);
+    let mut bs_next_ptr: *const u8 = (bs.buf)
+        .offset((bs.pos / 8 as i32) as isize);
     let mut bs_cache: u32 = (*bs_next_ptr.offset(0 as i32 as isize)
         as u32)
         .wrapping_mul(256 as u32)
@@ -4162,10 +4162,10 @@ unsafe fn L3_huffman(
         .wrapping_add(*bs_next_ptr.offset(2 as i32 as isize) as u32)
         .wrapping_mul(256 as u32)
         .wrapping_add(*bs_next_ptr.offset(3 as i32 as isize) as u32)
-        << ((*bs).pos & 7 as i32);
+        << (bs.pos & 7 as i32);
     let mut pairs_to_decode: i32 = 0;
     let mut np: i32 = 0;
-    let mut bs_sh: i32 = ((*bs).pos & 7 as i32) - 8 as i32;
+    let mut bs_sh: i32 = (bs.pos & 7 as i32) - 8 as i32;
     bs_next_ptr = bs_next_ptr.offset(4 as i32 as isize);
     while big_val_cnt > 0 as i32 {
         let mut tab_num: i32 = (*gr_info).table_select[ireg as usize]
@@ -4370,7 +4370,7 @@ unsafe fn L3_huffman(
         }
         bs_cache <<= leaf_1 & 7 as i32;
         bs_sh += leaf_1 & 7 as i32;
-        if bs_next_ptr.offset_from((*bs).buf) as isize
+        if bs_next_ptr.offset_from(bs.buf) as isize
             * 8 as i32 as isize - 24 as i32 as isize
             + bs_sh as isize > layer3gr_limit as isize
         {
@@ -4440,7 +4440,7 @@ unsafe fn L3_huffman(
         }
         dst = dst.offset(4 as i32 as isize);
     }
-    (*bs).pos = layer3gr_limit;
+    bs.pos = layer3gr_limit;
 }
 unsafe fn L3_midside_stereo(
     mut left: *mut f32,
@@ -5103,11 +5103,11 @@ unsafe fn L3_save_reservoir(
 }
 unsafe fn L3_restore_reservoir(
     mut h: *mut mp3dec_t,
-    mut bs: *mut bs_t,
+    bs: &mut bs_t,
     mut s: *mut mp3dec_scratch_t,
     mut main_data_begin: i32,
 ) -> i32 {
-    let mut frame_bytes: i32 = ((*bs).limit - (*bs).pos) / 8 as i32;
+    let mut frame_bytes: i32 = (bs.limit - bs.pos) / 8 as i32;
     let mut bytes_have: i32 = if (*h).reserv > main_data_begin {
         main_data_begin
     } else {
@@ -5129,7 +5129,7 @@ unsafe fn L3_restore_reservoir(
     );
     memcpy(
         ((*s).maindata).as_mut_ptr().offset(bytes_have as isize) as *mut (),
-        ((*bs).buf).offset(((*bs).pos / 8 as i32) as isize)
+        (bs.buf).offset((bs.pos / 8 as i32) as isize)
             as *const (),
         frame_bytes as usize,
     );
