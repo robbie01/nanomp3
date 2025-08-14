@@ -85,14 +85,14 @@ struct bs_t {
     pos: i32,
     limit: i32,
 }
-unsafe fn bs_init(
-    mut bs: *mut bs_t,
-    mut data: *const u8,
-    mut bytes: i32,
+fn bs_init(
+    bs: &mut bs_t,
+    data: *const u8,
+    bytes: i32,
 ) {
-    (*bs).buf = data;
-    (*bs).pos = 0 as i32;
-    (*bs).limit = bytes * 8 as i32;
+    bs.buf = data;
+    bs.pos = 0 as i32;
+    bs.limit = bytes * 8 as i32;
 }
 unsafe fn get_bits(mut bs: *mut bs_t, mut n: i32) -> u32 {
     let mut next: u32 = 0;
@@ -6164,11 +6164,11 @@ pub unsafe fn mp3dec_decode_frame(
     let mut frame_size: i32 = 0 as i32;
     let mut success: i32 = 1 as i32;
     let mut hdr: *const u8 = core::ptr::null();
-    let mut bs_frame: [bs_t; 1] = [bs_t {
+    let mut bs_frame = bs_t {
         buf: core::ptr::null(),
         pos: 0,
         limit: 0,
-    }; 1];
+    };
     let mut scratch: mp3dec_scratch_t = mp3dec_scratch_t {
         bs: bs_t {
             buf: core::ptr::null(),
@@ -6250,28 +6250,28 @@ pub unsafe fn mp3dec_decode_frame(
         return hdr_frame_samples(hdr) as i32;
     }
     bs_init(
-        bs_frame.as_mut_ptr(),
+        &mut bs_frame,
         hdr.offset(4 as i32 as isize),
         frame_size - 4 as i32,
     );
     if *hdr.offset(1 as i32 as isize) as i32 & 1 as i32 == 0 {
-        get_bits(bs_frame.as_mut_ptr(), 16 as i32);
+        get_bits(&mut bs_frame, 16 as i32);
     }
     if (*info).layer == 3 as i32 {
         let mut main_data_begin: i32 = L3_read_side_info(
-            bs_frame.as_mut_ptr(),
+            &mut bs_frame,
             (scratch.gr_info).as_mut_ptr(),
             hdr,
         );
         if main_data_begin < 0 as i32
-            || (*bs_frame.as_mut_ptr()).pos > (*bs_frame.as_mut_ptr()).limit
+            || bs_frame.pos > bs_frame.limit
         {
             mp3dec_init(dec);
             return 0 as i32;
         }
         success = L3_restore_reservoir(
             dec,
-            bs_frame.as_mut_ptr(),
+            &mut bs_frame,
             &raw mut scratch,
             main_data_begin,
         );
