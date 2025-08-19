@@ -51,7 +51,6 @@ type mp3d_sample_t = f32;
 #[derive(Copy, Clone)]
 #[repr(C)]
 struct mp3dec_scratch_t {
-    maindata: [u8; 2815],
     grbuf: [[f32; 576]; 2],
     scf: [f32; 40],
     syn: [[f32; 64]; 33],
@@ -79,15 +78,15 @@ struct L3_gr_info_t {
 }
 #[derive(Copy, Clone)]
 #[repr(C)]
-struct bs_t {
-    buf: *const u8,
+struct bs_t<'a> {
+    buf: &'a [u8],
     pos: i32,
-    limit: i32,
+    limit: i32
 }
 fn bs_init(
-    data: *const u8,
-    bytes: i32,
-) -> bs_t {
+    data: &[u8],
+    bytes: i32
+) -> bs_t<'_> {
     bs_t {
         buf: data,
         pos: 0,
@@ -100,15 +99,14 @@ unsafe fn get_bits(bs: &mut bs_t, n: i32) -> u32 {
     let mut cache: u32 = 0 as i32 as u32;
     let s: u32 = (bs.pos & 7 as i32) as u32;
     let mut shl: i32 = (n as u32).wrapping_add(s) as i32;
-    let mut p: *const u8 = (bs.buf)
-        .offset((bs.pos >> 3 as i32) as isize);
+    let mut p = &bs.buf[(bs.pos >> 3) as usize..];
     bs.pos += n;
     if bs.pos > bs.limit {
         return 0 as i32 as u32;
     }
     let fresh0 = p;
-    p = p.offset(1);
-    next = (*fresh0 as i32 & 255 as i32 >> s) as u32;
+    p = &p[1..];
+    next = (fresh0[0] as i32 & 255 as i32 >> s) as u32;
     loop {
         shl -= 8 as i32;
         if !(shl > 0 as i32) {
@@ -116,11 +114,12 @@ unsafe fn get_bits(bs: &mut bs_t, n: i32) -> u32 {
         }
         cache |= next << shl;
         let fresh1 = p;
-        p = p.offset(1);
-        next = *fresh1 as u32;
+        p = &p[1..];
+        next = fresh1[0] as u32;
     }
     return cache | next >> -shl;
 }
+
 fn hdr_valid(h: &[u8]) -> bool {
     h[0] == 0xff &&
         (h[1] & 0xf0 == 0xf0 || h[1] & 0xfe == 0xe2) &&
@@ -320,7 +319,7 @@ unsafe fn L3_read_side_info(
             break;
         }
     }
-    if part_23_sum + bs.pos > bs.limit + main_data_begin * 8 as i32 {
+    if part_23_sum + bs.pos > bs.limit + main_data_begin * 8 {
         return -(1 as i32);
     }
     return main_data_begin;
@@ -548,21 +547,19 @@ unsafe fn L3_huffman(
     let mut ireg: i32 = 0 as i32;
     let mut big_val_cnt: i32 = (*gr_info).big_values as i32;
     let mut sfb: *const u8 = (*gr_info).sfbtab;
-    let mut bs_next_ptr: *const u8 = (bs.buf)
-        .offset((bs.pos / 8 as i32) as isize);
-    let mut bs_cache: u32 = (*bs_next_ptr.offset(0 as i32 as isize)
-        as u32)
+    let mut bs_next_ptr = &bs.buf[(bs.pos / 8 as i32) as usize..];
+    let mut bs_cache: u32 = (bs_next_ptr[0] as u32)
         .wrapping_mul(256 as u32)
-        .wrapping_add(*bs_next_ptr.offset(1 as i32 as isize) as u32)
+        .wrapping_add(bs_next_ptr[1] as u32)
         .wrapping_mul(256 as u32)
-        .wrapping_add(*bs_next_ptr.offset(2 as i32 as isize) as u32)
+        .wrapping_add(bs_next_ptr[2] as u32)
         .wrapping_mul(256 as u32)
-        .wrapping_add(*bs_next_ptr.offset(3 as i32 as isize) as u32)
+        .wrapping_add(bs_next_ptr[3] as u32)
         << (bs.pos & 7 as i32);
     let mut pairs_to_decode: i32 = 0;
     let mut np: i32 = 0;
     let mut bs_sh: i32 = (bs.pos & 7 as i32) - 8 as i32;
-    bs_next_ptr = bs_next_ptr.offset(4 as i32 as isize);
+    bs_next_ptr = &bs_next_ptr[4..];
     while big_val_cnt > 0 as i32 {
         let tab_num: i32 = (*gr_info).table_select[ireg as usize]
             as i32;
@@ -613,8 +610,8 @@ unsafe fn L3_huffman(
                             bs_sh += linbits;
                             while bs_sh >= 0 as i32 {
                                 let fresh7 = bs_next_ptr;
-                                bs_next_ptr = bs_next_ptr.offset(1);
-                                bs_cache |= (*fresh7 as u32) << bs_sh;
+                                bs_next_ptr = &bs_next_ptr[1..];
+                                bs_cache |= (fresh7[0] as u32) << bs_sh;
                                 bs_sh -= 8 as i32;
                             }
                             *dst = one * L3_pow_43(lsb)
@@ -648,8 +645,8 @@ unsafe fn L3_huffman(
                     }
                     while bs_sh >= 0 as i32 {
                         let fresh8 = bs_next_ptr;
-                        bs_next_ptr = bs_next_ptr.offset(1);
-                        bs_cache |= (*fresh8 as u32) << bs_sh;
+                        bs_next_ptr = &bs_next_ptr[1..];
+                        bs_cache |= (fresh8[0] as u32) << bs_sh;
                         bs_sh -= 8 as i32;
                     }
                     pairs_to_decode -= 1;
@@ -721,8 +718,8 @@ unsafe fn L3_huffman(
                     }
                     while bs_sh >= 0 as i32 {
                         let fresh11 = bs_next_ptr;
-                        bs_next_ptr = bs_next_ptr.offset(1);
-                        bs_cache |= (*fresh11 as u32) << bs_sh;
+                        bs_next_ptr = &bs_next_ptr[1..];
+                        bs_cache |= (fresh11[0] as u32) << bs_sh;
                         bs_sh -= 8 as i32;
                     }
                     pairs_to_decode -= 1;
@@ -766,7 +763,7 @@ unsafe fn L3_huffman(
         }
         bs_cache <<= leaf_1 & 7 as i32;
         bs_sh += leaf_1 & 7 as i32;
-        if bs_next_ptr.offset_from(bs.buf) as isize
+        if (bs_next_ptr.as_ptr() as usize - bs.buf.as_ptr() as usize) as isize
             * 8 as i32 as isize - 24 as i32 as isize
             + bs_sh as isize > layer3gr_limit as isize
         {
@@ -830,8 +827,8 @@ unsafe fn L3_huffman(
         }
         while bs_sh >= 0 as i32 {
             let fresh16 = bs_next_ptr;
-            bs_next_ptr = bs_next_ptr.offset(1);
-            bs_cache |= (*fresh16 as u32) << bs_sh;
+            bs_next_ptr = &bs_next_ptr[1..];
+            bs_cache |= (fresh16[0] as u32) << bs_sh;
             bs_sh -= 8 as i32;
         }
         dst = dst.offset(4 as i32 as isize);
@@ -1371,7 +1368,6 @@ unsafe fn L3_imdct_gr(
 
 fn L3_save_reservoir(
     h: &mut mp3dec_t,
-    s: &mut mp3dec_scratch_t,
     s_bs: &mut bs_t
 ) {
     let mut pos: i32 = ((s_bs.pos + 7 as i32) as u32)
@@ -1384,16 +1380,16 @@ fn L3_save_reservoir(
         remains = 511 as i32;
     }
     if remains > 0 as i32 {
-        h.reserv_buf[..remains as usize].copy_from_slice(&s.maindata[pos as usize..(pos+remains) as usize]);
+        h.reserv_buf[..remains as usize].copy_from_slice(&s_bs.buf[pos as usize..(pos+remains) as usize]);
     }
     (*h).reserv = remains;
 }
 
-unsafe fn L3_restore_reservoir(
+unsafe fn L3_restore_reservoir<'a>(
     h: &mut mp3dec_t,
     bs: &mut bs_t,
-    s: &mut mp3dec_scratch_t,
-    s_bs: &mut bs_t,
+    s_maindata: &'a mut [u8; 2815],
+    s_bs: &mut bs_t<'a>,
     main_data_begin: i32,
 ) -> i32 {
     let frame_bytes: i32 = (bs.limit - bs.pos) / 8 as i32;
@@ -1403,7 +1399,7 @@ unsafe fn L3_restore_reservoir(
         (*h).reserv
     };
     memcpy(
-        ((*s).maindata).as_mut_ptr() as *mut (),
+        s_maindata.as_mut_ptr() as *mut (),
         ((*h).reserv_buf)
             .as_mut_ptr()
             .offset(
@@ -1417,12 +1413,12 @@ unsafe fn L3_restore_reservoir(
             as usize,
     );
     memcpy(
-        ((*s).maindata).as_mut_ptr().offset(bytes_have as isize) as *mut (),
-        (bs.buf).offset((bs.pos / 8 as i32) as isize)
+        s_maindata.as_mut_ptr().offset(bytes_have as isize) as *mut (),
+        bs.buf[(bs.pos / 8 as i32) as usize..].as_ptr()
             as *const (),
         frame_bytes as usize,
     );
-    *s_bs = bs_init(((*s).maindata).as_mut_ptr(), bytes_have + frame_bytes);
+    *s_bs = bs_init(&s_maindata[..], bytes_have + frame_bytes);
     return ((*h).reserv >= main_data_begin) as i32;
 }
 unsafe fn L3_decode(
@@ -2149,14 +2145,14 @@ pub unsafe fn mp3dec_decode_frame(
     let mut frame_size: usize = 0;
     let mut success: i32 = 1 as i32;
     let mut scratch: mp3dec_scratch_t = mp3dec_scratch_t {
-        maindata: [0; 2815],
         grbuf: [[0.; 576]; 2],
         scf: [0.; 40],
         syn: [[0.; 64]; 33],
         ist_pos: [[0; 39]; 2],
     };
+    let mut scratch_maindata = [0u8; 2815];
     let mut scratch_bs = bs_t {
-        buf: core::ptr::null(),
+        buf: &[],
         pos: 0,
         limit: 0,
     };
@@ -2225,7 +2221,7 @@ pub unsafe fn mp3dec_decode_frame(
         return hdr_frame_samples(hdr) as i32;
     }
     let mut bs_frame = bs_init(
-        hdr[4..].as_ptr(),
+        &hdr[4..],
         (frame_size - 4) as i32,
     );
     if hdr[1] & 1 == 0 {
@@ -2246,7 +2242,7 @@ pub unsafe fn mp3dec_decode_frame(
         success = L3_restore_reservoir(
             dec,
             &mut bs_frame,
-            &mut scratch,
+            &mut scratch_maindata,
             &mut scratch_bs,
             main_data_begin,
         );
@@ -2274,7 +2270,7 @@ pub unsafe fn mp3dec_decode_frame(
                 pcm = &mut pcm[576 * ((*info).channels as usize)..];
             }
         }
-        L3_save_reservoir(dec, &mut scratch, &mut scratch_bs);
+        L3_save_reservoir(dec, &mut scratch_bs);
     } else {
         return 0 as i32
     }
