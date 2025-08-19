@@ -6,6 +6,8 @@
 )]
 
 mod tables;
+use core::iter;
+
 use tables::*;
 
 #[inline(always)]
@@ -835,42 +837,40 @@ unsafe fn L3_huffman(
     }
     bs.pos = layer3gr_limit;
 }
-unsafe fn L3_midside_stereo(
-    left: *mut f32,
-    n: i32,
+
+fn L3_midside_stereo(
+    left: &mut [f32],
+    n: usize,
 ) {
-    let mut i: i32 = 0 as i32;
-    let right: *mut f32 = left.offset(576 as i32 as isize);
-    while i < n {
-        let a: f32 = *left.offset(i as isize);
-        let b: f32 = *right.offset(i as isize);
-        *left.offset(i as isize) = a + b;
-        *right.offset(i as isize) = a - b;
-        i += 1;
+    let (left, right) = left.split_at_mut(576);
+    for (l, r) in iter::zip(left, right).take(n as usize) {
+        let a = *l;
+        let b = *r;
+        *l = a + b;
+        *r = a - b;
     }
 }
-unsafe fn L3_intensity_stereo_band(
-    left: *mut f32,
-    n: i32,
+
+fn L3_intensity_stereo_band(
+    left: &mut [f32],
+    n: usize,
     kl: f32,
     kr: f32,
 ) {
-    let mut i: i32 = 0;
-    i = 0 as i32;
-    while i < n {
-        *left.offset((i + 576 as i32) as isize) = *left.offset(i as isize) * kr;
-        *left.offset(i as isize) = *left.offset(i as isize) * kl;
-        i += 1;
+    for i in 0..n {
+        left[i + 576] = left[i] * kr;
+        left[i] = left[i] * kl;
     }
 }
+
 unsafe fn L3_stereo_top_band(
-    mut right: *const f32,
+    mut right: &[f32],
     sfb: *const u8,
     nbands: i32,
     max_band: *mut i32,
 ) {
     let mut i: i32 = 0;
-    let mut k: i32 = 0;
+    let mut k = 0usize;
     let ref mut fresh17 = *max_band.offset(2 as i32 as isize);
     *fresh17 = -(1 as i32);
     let ref mut fresh18 = *max_band.offset(1 as i32 as isize);
@@ -878,24 +878,24 @@ unsafe fn L3_stereo_top_band(
     *max_band.offset(0 as i32 as isize) = *fresh18;
     i = 0 as i32;
     while i < nbands {
-        k = 0 as i32;
-        while k < *sfb.offset(i as isize) as i32 {
-            if *right.offset(k as isize) != 0 as i32 as f32
-                || *right.offset((k + 1 as i32) as isize)
+        k = 0;
+        while k < *sfb.offset(i as isize) as usize {
+            if right[k] != 0 as i32 as f32
+                || right[k + 1]
                     != 0 as i32 as f32
             {
                 *max_band.offset((i % 3 as i32) as isize) = i;
                 break;
             } else {
-                k += 2 as i32;
+                k += 2;
             }
         }
-        right = right.offset(*sfb.offset(i as isize) as i32 as isize);
+        right = &right[*sfb.offset(i as isize) as usize..];
         i += 1;
     }
 }
 unsafe fn L3_stereo_process(
-    mut left: *mut f32,
+    mut left: &mut [f32],
     ist_pos: *const u8,
     sfb: *const u8,
     hdr: *const u8,
@@ -948,21 +948,21 @@ unsafe fn L3_stereo_process(
             }
             L3_intensity_stereo_band(
                 left,
-                *sfb.offset(i as isize) as i32,
+                *sfb.offset(i as isize) as usize,
                 kl * s,
                 kr * s,
             );
         } else if *hdr.offset(3 as i32 as isize) as i32
             & 0x20 as i32 != 0
         {
-            L3_midside_stereo(left, *sfb.offset(i as isize) as i32);
+            L3_midside_stereo(left, *sfb.offset(i as isize) as usize);
         }
-        left = left.offset(*sfb.offset(i as isize) as i32 as isize);
+        left = &mut left[*sfb.offset(i as isize) as usize..];
         i = i.wrapping_add(1);
     }
 }
 unsafe fn L3_intensity_stereo(
-    left: *mut f32,
+    left: &mut [f32],
     ist_pos: *mut u8,
     gr: &[L3_gr_info_t],
     hdr: *const u8,
@@ -977,7 +977,7 @@ unsafe fn L3_intensity_stereo(
         1 as i32
     };
     L3_stereo_top_band(
-        left.offset(576 as i32 as isize),
+        &left[576..],
         gr[0].sfbtab,
         n_sfb,
         max_band.as_mut_ptr(),
@@ -1445,7 +1445,7 @@ unsafe fn L3_decode(
     }
     if (*h).header[3 as i32 as usize] as i32 & 0x10 as i32 != 0 {
         L3_intensity_stereo(
-            (*s).grbuf.as_flattened_mut().as_mut_ptr(),
+            (*s).grbuf.as_flattened_mut(),
             ((*s).ist_pos[1 as i32 as usize]).as_mut_ptr(),
             gr_info,
             ((*h).header).as_mut_ptr(),
@@ -1454,8 +1454,8 @@ unsafe fn L3_decode(
         == 0x60 as i32
     {
         L3_midside_stereo(
-            (*s).grbuf.as_flattened_mut().as_mut_ptr(),
-            576 as i32,
+            (*s).grbuf.as_flattened_mut(),
+            576,
         );
     }
     ch = 0;
