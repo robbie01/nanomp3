@@ -1404,7 +1404,7 @@ unsafe fn L3_imdct_gr(
 }
 unsafe fn L3_save_reservoir(
     mut h: &mut mp3dec_t,
-    mut s: *mut mp3dec_scratch_t,
+    mut s: &mut mp3dec_scratch_t,
 ) {
     let mut pos: i32 = (((*s).bs.pos + 7 as i32) as u32)
         .wrapping_div(8 as u32) as i32;
@@ -1427,7 +1427,7 @@ unsafe fn L3_save_reservoir(
 unsafe fn L3_restore_reservoir(
     mut h: &mut mp3dec_t,
     bs: &mut bs_t,
-    mut s: *mut mp3dec_scratch_t,
+    mut s: &mut mp3dec_scratch_t,
     mut main_data_begin: i32,
 ) -> i32 {
     let mut frame_bytes: i32 = (bs.limit - bs.pos) / 8 as i32;
@@ -2328,7 +2328,7 @@ pub unsafe fn mp3dec_decode_frame(
         success = L3_restore_reservoir(
             dec,
             &mut bs_frame,
-            &raw mut scratch,
+            &mut scratch,
             main_data_begin,
         );
         if success != 0 {
@@ -2363,7 +2363,7 @@ pub unsafe fn mp3dec_decode_frame(
                 pcm = pcm.offset((576 as i32 * (*info).channels) as isize);
             }
         }
-        L3_save_reservoir(dec, &raw mut scratch);
+        L3_save_reservoir(dec, &mut scratch);
     } else {
         return 0 as i32
     }
