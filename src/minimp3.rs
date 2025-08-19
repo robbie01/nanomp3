@@ -141,10 +141,10 @@ fn hdr_compare(
 }
 
 fn hdr_bitrate_kbps(h: &[u8]) -> u32 {
-    2 * HDR_BITRATE_KBPS_HALFRATE
+    2 * (HDR_BITRATE_KBPS_HALFRATE
         [(h[1] & 0x8 != 0) as usize]
         [((h[1] >> 1 & 3) - 1) as usize]
-        [(h[2] >> 4) as usize] as u32
+        [(h[2] >> 4) as usize] as u32)
 }
 
 fn hdr_sample_rate_hz(h: &[u8]) -> u32 {
