@@ -94,7 +94,7 @@ fn bs_init(
     }
 }
 
-unsafe fn get_bits(bs: &mut bs_t, n: i32) -> u32 {
+fn get_bits(bs: &mut bs_t, n: i32) -> u32 {
     let mut next: u32 = 0;
     let mut cache: u32 = 0 as i32 as u32;
     let s: u32 = (bs.pos & 7 as i32) as u32;
@@ -185,7 +185,7 @@ fn hdr_padding(h: &[u8]) -> usize {
     }
 }
 
-unsafe fn L3_read_side_info(
+fn L3_read_side_info(
     bs: &mut bs_t,
     mut gr: &mut [L3_gr_info_t],
     hdr: &[u8],
@@ -1385,7 +1385,7 @@ fn L3_save_reservoir(
     (*h).reserv = remains;
 }
 
-unsafe fn L3_restore_reservoir<'a>(
+fn L3_restore_reservoir<'a>(
     h: &mut mp3dec_t,
     bs: &mut bs_t,
     s_maindata: &'a mut [u8; 2815],
@@ -1398,26 +1398,20 @@ unsafe fn L3_restore_reservoir<'a>(
     } else {
         (*h).reserv
     };
-    memcpy(
-        s_maindata.as_mut_ptr() as *mut (),
-        ((*h).reserv_buf)
-            .as_mut_ptr()
-            .offset(
-                (if (0 as i32) < (*h).reserv - main_data_begin {
-                    (*h).reserv - main_data_begin
-                } else {
-                    0 as i32
-                }) as isize,
-            ) as *const (),
-        (if (*h).reserv > main_data_begin { main_data_begin } else { (*h).reserv })
-            as usize,
-    );
-    memcpy(
-        s_maindata.as_mut_ptr().offset(bytes_have as isize) as *mut (),
-        bs.buf[(bs.pos / 8 as i32) as usize..].as_ptr()
-            as *const (),
-        frame_bytes as usize,
-    );
+
+    {
+        let off = if (0 as i32) < (*h).reserv - main_data_begin {
+            (*h).reserv - main_data_begin
+        } else {
+            0 as i32
+        };
+        let cnt = if (*h).reserv > main_data_begin { main_data_begin } else { (*h).reserv };
+        s_maindata[..cnt as usize].copy_from_slice(&h.reserv_buf[off as usize..off as usize + cnt as usize]);
+    }
+
+    s_maindata[bytes_have as usize..bytes_have as usize + frame_bytes as usize]
+        .copy_from_slice(&bs.buf[(bs.pos / 8) as usize..(bs.pos / 8) as usize + frame_bytes as usize]);
+
     *s_bs = bs_init(&s_maindata[..], bytes_have + frame_bytes);
     return ((*h).reserv >= main_data_begin) as i32;
 }
