@@ -17,11 +17,11 @@ unsafe fn memcpy(dst: *mut (), src: *const (), count: usize) {
 #[derive(Copy, Clone, Default)]
 #[repr(C)]
 pub struct mp3dec_frame_info_t {
-    pub frame_bytes: i32,
-    pub frame_offset: i32,
+    pub frame_bytes: usize,
+    pub frame_offset: usize,
     pub channels: i32,
     pub hz: i32,
-    pub layer: i32,
+    pub layer: u8,
     pub bitrate_kbps: i32,
 }
 #[derive(Copy, Clone)]
@@ -30,7 +30,7 @@ pub struct mp3dec_t {
     mdct_overlap: [[f32; 288]; 2],
     qmf_state: [f32; 960],
     reserv: i32,
-    free_format_bytes: i32,
+    free_format_bytes: usize,
     header: [u8; 4],
     reserv_buf: [u8; 511],
 }
@@ -122,93 +122,71 @@ unsafe fn get_bits(bs: &mut bs_t, n: i32) -> u32 {
     }
     return cache | next >> -shl;
 }
-unsafe fn hdr_valid(h: *const u8) -> i32 {
-    return (*h.offset(0 as i32 as isize) as i32 == 0xff as i32
-        && (*h.offset(1 as i32 as isize) as i32 & 0xf0 as i32
-            == 0xf0 as i32
-            || *h.offset(1 as i32 as isize) as i32 & 0xfe as i32
-                == 0xe2 as i32)
-        && *h.offset(1 as i32 as isize) as i32 >> 1 as i32
-            & 3 as i32 != 0 as i32
-        && *h.offset(2 as i32 as isize) as i32 >> 4 as i32
-            != 15 as i32
-        && *h.offset(2 as i32 as isize) as i32 >> 2 as i32
-            & 3 as i32 != 3 as i32) as i32;
+fn hdr_valid(h: &[u8]) -> bool {
+    h[0] == 0xff &&
+        (h[1] & 0xf0 == 0xf0 || h[1] & 0xfe == 0xe2) &&
+        h[1] >> 1 & 3 != 0 &&
+        h[2] >> 4 != 15 &&
+        h[2] >> 2 & 3 != 3
 }
-unsafe fn hdr_compare(
-    h1: *const u8,
-    h2: *const u8,
-) -> i32 {
-    return (hdr_valid(h2) != 0
-        && (*h1.offset(1 as i32 as isize) as i32
-            ^ *h2.offset(1 as i32 as isize) as i32) & 0xfe as i32
-            == 0 as i32
-        && (*h1.offset(2 as i32 as isize) as i32
-            ^ *h2.offset(2 as i32 as isize) as i32) & 0xc as i32
-            == 0 as i32
-        && (*h1.offset(2 as i32 as isize) as i32 & 0xf0 as i32
-            == 0 as i32) as i32
-            ^ (*h2.offset(2 as i32 as isize) as i32 & 0xf0 as i32
-                == 0 as i32) as i32 == 0) as i32;
+
+fn hdr_compare(
+    h1: &[u8],
+    h2: &[u8],
+) -> bool {
+    hdr_valid(h2) &&
+        (h1[1] ^ h2[1]) & 0xfe == 0 &&
+        (h1[2] ^ h2[2]) & 0xc == 0 &&
+        (h1[2] & 0xf0 == 0) == (h2[2] & 0xf0 == 0)
 }
-unsafe fn hdr_bitrate_kbps(h: *const u8) -> u32 {
-    return (2 as i32
-        * HDR_BITRATE_KBPS_HALFRATE[(*h.offset(1 as i32 as isize) as i32
-            & 0x8 as i32 != 0) as i32
-            as usize][((*h.offset(1 as i32 as isize) as i32
-            >> 1 as i32 & 3 as i32) - 1 as i32)
-            as usize][(*h.offset(2 as i32 as isize) as i32
-            >> 4 as i32) as usize] as i32) as u32;
+
+fn hdr_bitrate_kbps(h: &[u8]) -> u32 {
+    2 * HDR_BITRATE_KBPS_HALFRATE
+        [(h[1] & 0x8 != 0) as usize]
+        [((h[1] >> 1 & 3) - 1) as usize]
+        [(h[2] >> 4) as usize] as u32
 }
-unsafe fn hdr_sample_rate_hz(h: *const u8) -> u32 {
-    return HDR_SAMPLE_RATE_HZ_G_HZ[(*h.offset(2 as i32 as isize) as i32 >> 2 as i32
-        & 3 as i32) as usize]
-        >> (*h.offset(1 as i32 as isize) as i32 & 0x8 as i32
-            == 0) as i32
-        >> (*h.offset(1 as i32 as isize) as i32 & 0x10 as i32
-            == 0) as i32;
+
+fn hdr_sample_rate_hz(h: &[u8]) -> u32 {
+    HDR_SAMPLE_RATE_HZ_G_HZ[(h[2] >> 2 & 3) as usize]
+        >> (h[1] & 0x8 == 0) as u32
+        >> (h[1] & 0x10 == 0) as u32
 }
-unsafe fn hdr_frame_samples(h: *const u8) -> u32 {
-    return (if *h.offset(1 as i32 as isize) as i32 & 6 as i32
-        == 6 as i32
-    {
-        384 as i32
+
+fn hdr_frame_samples(h: &[u8]) -> u32 {
+    if h[1] & 6 == 6 {
+        384
     } else {
-        1152 as i32
-            >> (*h.offset(1 as i32 as isize) as i32 & 14 as i32
-                == 2 as i32) as i32
-    }) as u32;
-}
-unsafe fn hdr_frame_bytes(
-    h: *const u8,
-    free_format_size: i32,
-) -> i32 {
-    let mut frame_bytes: i32 = (hdr_frame_samples(h))
-        .wrapping_mul(hdr_bitrate_kbps(h))
-        .wrapping_mul(125 as i32 as u32)
-        .wrapping_div(hdr_sample_rate_hz(h)) as i32;
-    if *h.offset(1 as i32 as isize) as i32 & 6 as i32
-        == 6 as i32
-    {
-        frame_bytes &= !(3 as i32);
+        1152 >> (h[1] & 14 == 2) as u32
     }
-    return if frame_bytes != 0 { frame_bytes } else { free_format_size };
 }
-unsafe fn hdr_padding(h: *const u8) -> i32 {
-    return if *h.offset(2 as i32 as isize) as i32 & 0x2 as i32
-        != 0
-    {
-        if *h.offset(1 as i32 as isize) as i32 & 6 as i32
-            == 6 as i32
-        {
-            4 as i32
+
+fn hdr_frame_bytes(
+    h: &[u8],
+    free_format_size: usize,
+) -> usize {
+    let mut frame_bytes = (hdr_frame_samples(h))
+        .wrapping_mul(hdr_bitrate_kbps(h))
+        .wrapping_mul(125)
+        .wrapping_div(hdr_sample_rate_hz(h)) as usize;
+    if h[1] & 6 == 6 {
+        frame_bytes &= !3;
+    }
+    if frame_bytes != 0 { frame_bytes } else { free_format_size }
+}
+
+fn hdr_padding(h: &[u8]) -> usize {
+    if h[2] & 0x2 != 0 {
+        if h[1] & 6 == 6 {
+            4
         } else {
-            1 as i32
+            1
         }
     } else {
-        0 as i32
-    };
+        0
+    }
 }
+
 unsafe fn L3_read_side_info(
     bs: &mut bs_t,
     mut gr: *mut L3_gr_info_t,
@@ -2130,56 +2108,46 @@ unsafe fn mp3d_synth_granule(
             .wrapping_mul(64 as i32 as usize),
     );
 }
-unsafe fn mp3d_match_frame(
-    hdr: *const u8,
-    mp3_bytes: i32,
-    frame_bytes: i32,
-) -> i32 {
-    let mut i: i32 = 0;
+
+fn mp3d_match_frame(
+    hdr: &[u8],
+    frame_bytes: usize,
+) -> bool {
+    let mut i: usize = 0;
     let mut nmatch: i32 = 0;
-    i = 0 as i32;
     nmatch = 0 as i32;
     while nmatch < 10 as i32 {
-        i
-            += hdr_frame_bytes(hdr.offset(i as isize), frame_bytes)
-                + hdr_padding(hdr.offset(i as isize));
-        if i + 4 as i32 > mp3_bytes {
-            return (nmatch > 0 as i32) as i32;
+        i += hdr_frame_bytes(&hdr[i..], frame_bytes) + hdr_padding(&hdr[i..]);
+        if i + 4 > hdr.len() {
+            return nmatch > 0;
         }
-        if hdr_compare(hdr, hdr.offset(i as isize)) == 0 {
-            return 0 as i32;
+        if !hdr_compare(hdr, &hdr[i..]) {
+            return false;
         }
         nmatch += 1;
     }
-    return 1 as i32;
+    true
 }
-unsafe fn mp3d_find_frame(
-    mut mp3: *const u8,
-    mp3_bytes: i32,
-    free_format_bytes: *mut i32,
-    ptr_frame_bytes: *mut i32,
-) -> i32 {
-    let mut i: i32 = 0;
-    let mut k: i32 = 0;
-    i = 0 as i32;
-    while i < mp3_bytes - 4 as i32 {
-        if hdr_valid(mp3) != 0 {
-            let mut frame_bytes: i32 = hdr_frame_bytes(mp3, *free_format_bytes);
-            let mut frame_and_padding: i32 = frame_bytes + hdr_padding(mp3);
-            k = 4 as i32;
-            while frame_bytes == 0 && k < 2304 as i32
-                && i + 2 as i32 * k < mp3_bytes - 4 as i32
+
+fn mp3d_find_frame(
+    mut mp3: &[u8],
+    free_format_bytes: &mut usize,
+    ptr_frame_bytes: &mut usize,
+) -> usize {
+    let mp3_bytes = mp3.len();
+    let mut i: usize = 0;
+    let mut k: usize = 0;
+    while i < mp3_bytes - 4 {
+        if hdr_valid(mp3) {
+            let mut frame_bytes = hdr_frame_bytes(mp3, *free_format_bytes);
+            let mut frame_and_padding = frame_bytes + hdr_padding(mp3);
+            k = 4;
+            while frame_bytes == 0 && k < 2304 && i + 2 * k < mp3_bytes - 4
             {
-                if hdr_compare(mp3, mp3.offset(k as isize)) != 0 {
-                    let fb: i32 = k - hdr_padding(mp3);
-                    let nextfb: i32 = fb
-                        + hdr_padding(mp3.offset(k as isize));
-                    if !(i + k + nextfb + 4 as i32 > mp3_bytes
-                        || hdr_compare(
-                            mp3,
-                            mp3.offset(k as isize).offset(nextfb as isize),
-                        ) == 0)
-                    {
+                if hdr_compare(mp3, &mp3[k..]) {
+                    let fb = k - hdr_padding(mp3);
+                    let nextfb = fb + hdr_padding(&mp3[k..]);
+                    if !(i + k + nextfb + 4 > mp3_bytes || !hdr_compare(mp3, &mp3[k+nextfb..])) {
                         frame_and_padding = k;
                         frame_bytes = fb;
                         *free_format_bytes = fb;
@@ -2188,19 +2156,19 @@ unsafe fn mp3d_find_frame(
                 k += 1;
             }
             if frame_bytes != 0 && i + frame_and_padding <= mp3_bytes
-                && mp3d_match_frame(mp3, mp3_bytes - i, frame_bytes) != 0
+                && mp3d_match_frame(mp3, frame_bytes)
                 || i == 0 && frame_and_padding == mp3_bytes
             {
                 *ptr_frame_bytes = frame_and_padding;
                 return i;
             }
-            *free_format_bytes = 0 as i32;
+            *free_format_bytes = 0;
         }
         i += 1;
-        mp3 = mp3.offset(1);
+        mp3 = &mp3[1..];
     }
-    *ptr_frame_bytes = 0 as i32;
-    return mp3_bytes;
+    *ptr_frame_bytes = 0;
+    mp3_bytes
 }
 
 pub const fn mp3dec_init(dec: &mut mp3dec_t) {
@@ -2209,16 +2177,14 @@ pub const fn mp3dec_init(dec: &mut mp3dec_t) {
 
 pub unsafe fn mp3dec_decode_frame(
     dec: &mut mp3dec_t,
-    mp3: *const u8,
-    mp3_bytes: i32,
+    mp3: &[u8],
     mut pcm: *mut mp3d_sample_t,
     info: *mut mp3dec_frame_info_t,
 ) -> i32 {
-    let mut i: i32 = 0 as i32;
+    let mut i: usize = 0;
     let mut igr: i32 = 0;
-    let mut frame_size: i32 = 0 as i32;
+    let mut frame_size: usize = 0;
     let mut success: i32 = 1 as i32;
-    let mut hdr: *const u8 = core::ptr::null();
     let mut bs_frame = bs_t {
         buf: core::ptr::null(),
         pos: 0,
@@ -2254,69 +2220,65 @@ pub unsafe fn mp3dec_decode_frame(
         syn: [[0.; 64]; 33],
         ist_pos: [[0; 39]; 2],
     };
-    if mp3_bytes > 4 as i32
+    if mp3.len() > 4
         && (*dec).header[0 as i32 as usize] as i32 == 0xff as i32
-        && hdr_compare(((*dec).header).as_mut_ptr(), mp3) != 0
+        && hdr_compare(&dec.header, mp3)
     {
         frame_size = hdr_frame_bytes(mp3, (*dec).free_format_bytes) + hdr_padding(mp3);
-        if frame_size != mp3_bytes
-            && (frame_size + 4 as i32 > mp3_bytes
-                || hdr_compare(mp3, mp3.offset(frame_size as isize)) == 0)
+        if frame_size != mp3.len()
+            && (frame_size + 4 > mp3.len()
+                || !hdr_compare(mp3, &mp3[frame_size..]))
         {
-            frame_size = 0 as i32;
+            frame_size = 0;
         }
     }
     if frame_size == 0 {
         core::ptr::write_bytes(dec, 0, 1);
         i = mp3d_find_frame(
             mp3,
-            mp3_bytes,
             &mut (*dec).free_format_bytes,
             &mut frame_size,
         );
-        if frame_size == 0 || i + frame_size > mp3_bytes {
+        if frame_size == 0 || i + frame_size > mp3.len() {
             (*info).frame_bytes = i;
             return 0 as i32;
         }
     }
-    hdr = mp3.offset(i as isize);
+    let hdr = &mp3[i..];
     memcpy(
         ((*dec).header).as_mut_ptr() as *mut (),
-        hdr as *const (),
+        hdr.as_ptr() as *const (),
         4 as i32 as usize,
     );
     (*info).frame_bytes = i + frame_size;
     (*info).frame_offset = i;
-    (*info)
-        .channels = if *hdr.offset(3 as i32 as isize) as i32
-        & 0xc0 as i32 == 0xc0 as i32
-    {
-        1 as i32
+    (*info).channels = if hdr[3] & 0xc0 == 0xc0 {
+        1
     } else {
-        2 as i32
+        2
     };
     (*info).hz = hdr_sample_rate_hz(hdr) as i32;
     (*info)
-        .layer = 4 as i32
-        - (*hdr.offset(1 as i32 as isize) as i32 >> 1 as i32
-            & 3 as i32);
+        .layer = 4
+        - (hdr[1] >> 1
+            & 3);
     (*info).bitrate_kbps = hdr_bitrate_kbps(hdr) as i32;
     if pcm.is_null() {
         return hdr_frame_samples(hdr) as i32;
     }
     bs_init(
         &mut bs_frame,
-        hdr.offset(4 as i32 as isize),
-        frame_size - 4 as i32,
+        hdr[4..].as_ptr(),
+        (frame_size - 4) as i32,
     );
-    if *hdr.offset(1 as i32 as isize) as i32 & 1 as i32 == 0 {
-        get_bits(&mut bs_frame, 16 as i32);
+    if hdr[1] & 1 == 0 {
+        get_bits(&mut bs_frame, 16);
     }
-    if (*info).layer == 3 as i32 {
+    if (*info).layer == 3 {
         let main_data_begin: i32 = L3_read_side_info(
             &mut bs_frame,
             (scratch.gr_info).as_mut_ptr(),
-            hdr,
+            hdr.as_ptr(),
         );
         if main_data_begin < 0 as i32
             || bs_frame.pos > bs_frame.limit
@@ -2332,14 +2294,7 @@ pub unsafe fn mp3dec_decode_frame(
         );
         if success != 0 {
             igr = 0 as i32;
-            while igr
-                < (if *hdr.offset(1 as i32 as isize) as i32
-                    & 0x8 as i32 != 0
-                {
-                    2 as i32
-                } else {
-                    1 as i32
-                })
+            while igr < (if hdr[1] & 0x8 != 0 { 2 } else { 1 })
             {
                 core::ptr::write_bytes(&raw mut scratch.grbuf, 0, 1);
                 L3_decode(
@@ -2367,5 +2322,5 @@ pub unsafe fn mp3dec_decode_frame(
         return 0 as i32
     }
     return (success as u32)
-        .wrapping_mul(hdr_frame_samples(((*dec).header).as_mut_ptr())) as i32;
+        .wrapping_mul(hdr_frame_samples(&dec.header)) as i32;
 }
