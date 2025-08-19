@@ -51,7 +51,6 @@ type mp3d_sample_t = f32;
 #[derive(Copy, Clone)]
 #[repr(C)]
 struct mp3dec_scratch_t {
-    bs: bs_t,
     maindata: [u8; 2815],
     grbuf: [[f32; 576]; 2],
     scf: [f32; 40],
@@ -1373,10 +1372,11 @@ unsafe fn L3_imdct_gr(
 fn L3_save_reservoir(
     h: &mut mp3dec_t,
     s: &mut mp3dec_scratch_t,
+    s_bs: &mut bs_t
 ) {
-    let mut pos: i32 = (((*s).bs.pos + 7 as i32) as u32)
+    let mut pos: i32 = ((s_bs.pos + 7 as i32) as u32)
         .wrapping_div(8 as u32) as i32;
-    let mut remains: i32 = ((*s).bs.limit as u32)
+    let mut remains: i32 = (s_bs.limit as u32)
         .wrapping_div(8 as u32)
         .wrapping_sub(pos as u32) as i32;
     if remains > 511 as i32 {
@@ -1393,6 +1393,7 @@ unsafe fn L3_restore_reservoir(
     h: &mut mp3dec_t,
     bs: &mut bs_t,
     s: &mut mp3dec_scratch_t,
+    s_bs: &mut bs_t,
     main_data_begin: i32,
 ) -> i32 {
     let frame_bytes: i32 = (bs.limit - bs.pos) / 8 as i32;
@@ -1421,30 +1422,31 @@ unsafe fn L3_restore_reservoir(
             as *const (),
         frame_bytes as usize,
     );
-    s.bs = bs_init(((*s).maindata).as_mut_ptr(), bytes_have + frame_bytes);
+    *s_bs = bs_init(((*s).maindata).as_mut_ptr(), bytes_have + frame_bytes);
     return ((*h).reserv >= main_data_begin) as i32;
 }
 unsafe fn L3_decode(
     h: &mut mp3dec_t,
     s: &mut mp3dec_scratch_t,
+    s_bs: &mut bs_t,
     mut gr_info: &mut [L3_gr_info_t],
     nch: u32,
 ) {
     let mut ch: u32 = 0;
     while ch < nch {
-        let layer3gr_limit: i32 = (*s).bs.pos
+        let layer3gr_limit: i32 = s_bs.pos
             + gr_info[ch as usize].part_23_length as i32;
         L3_decode_scalefactors(
             ((*h).header).as_mut_ptr(),
             ((*s).ist_pos[ch as usize]).as_mut_ptr(),
-            &mut (*s).bs,
+            s_bs,
             &gr_info[ch as usize],
             ((*s).scf).as_mut_ptr(),
             ch,
         );
         L3_huffman(
             ((*s).grbuf[ch as usize]).as_mut_ptr(),
-            &mut (*s).bs,
+            s_bs,
             &gr_info[ch as usize],
             ((*s).scf).as_mut_ptr(),
             layer3gr_limit,
@@ -2147,16 +2149,16 @@ pub unsafe fn mp3dec_decode_frame(
     let mut frame_size: usize = 0;
     let mut success: i32 = 1 as i32;
     let mut scratch: mp3dec_scratch_t = mp3dec_scratch_t {
-        bs: bs_t {
-            buf: core::ptr::null(),
-            pos: 0,
-            limit: 0,
-        },
         maindata: [0; 2815],
         grbuf: [[0.; 576]; 2],
         scf: [0.; 40],
         syn: [[0.; 64]; 33],
         ist_pos: [[0; 39]; 2],
+    };
+    let mut scratch_bs = bs_t {
+        buf: core::ptr::null(),
+        pos: 0,
+        limit: 0,
     };
     let mut scratch_gr_info = [L3_gr_info_t {
         sfbtab: core::ptr::null(),
@@ -2245,6 +2247,7 @@ pub unsafe fn mp3dec_decode_frame(
             dec,
             &mut bs_frame,
             &mut scratch,
+            &mut scratch_bs,
             main_data_begin,
         );
         if success != 0 {
@@ -2255,6 +2258,7 @@ pub unsafe fn mp3dec_decode_frame(
                 L3_decode(
                     dec,
                     &mut scratch,
+                    &mut scratch_bs,
                     &mut scratch_gr_info[(igr * (*info).channels) as usize..],
                     (*info).channels,
                 );
@@ -2270,7 +2274,7 @@ pub unsafe fn mp3dec_decode_frame(
                 pcm = &mut pcm[576 * ((*info).channels as usize)..];
             }
         }
-        L3_save_reservoir(dec, &mut scratch);
+        L3_save_reservoir(dec, &mut scratch, &mut scratch_bs);
     } else {
         return 0 as i32
     }
