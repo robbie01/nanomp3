@@ -1090,7 +1090,7 @@ fn L3_antialias(
         grbuf = &mut grbuf[18..];
     }
 }
-unsafe fn L3_dct3_9(y: *mut f32) {
+fn L3_dct3_9(y: &mut [f32]) {
     let mut s0: f32 = 0.;
     let mut s1: f32 = 0.;
     let mut s2: f32 = 0.;
@@ -1103,11 +1103,11 @@ unsafe fn L3_dct3_9(y: *mut f32) {
     let mut t0: f32 = 0.;
     let mut t2: f32 = 0.;
     let mut t4: f32 = 0.;
-    s0 = *y.offset(0 as i32 as isize);
-    s2 = *y.offset(2 as i32 as isize);
-    s4 = *y.offset(4 as i32 as isize);
-    s6 = *y.offset(6 as i32 as isize);
-    s8 = *y.offset(8 as i32 as isize);
+    s0 = y[0];
+    s2 = y[2];
+    s4 = y[4];
+    s6 = y[6];
+    s8 = y[8];
     t0 = s0 + s6 * 0.5f32;
     s0 -= s6;
     t4 = (s4 + s2) * 0.93969262f32;
@@ -1115,14 +1115,14 @@ unsafe fn L3_dct3_9(y: *mut f32) {
     s6 = (s4 - s8) * 0.17364818f32;
     s4 += s8 - s2;
     s2 = s0 - s4 * 0.5f32;
-    *y.offset(4 as i32 as isize) = s4 + s0;
+    y[4] = s4 + s0;
     s8 = t0 - t2 + s6;
     s0 = t0 - t4 + t2;
     s4 = t0 + t4 - s6;
-    s1 = *y.offset(1 as i32 as isize);
-    s3 = *y.offset(3 as i32 as isize);
-    s5 = *y.offset(5 as i32 as isize);
-    s7 = *y.offset(7 as i32 as isize);
+    s1 = y[1];
+    s3 = y[3];
+    s5 = y[5];
+    s7 = y[7];
     s3 *= 0.86602540f32;
     t0 = (s5 + s1) * 0.98480775f32;
     t4 = (s5 - s7) * 0.34202014f32;
@@ -1131,14 +1131,14 @@ unsafe fn L3_dct3_9(y: *mut f32) {
     s5 = t0 - s3 - t2;
     s7 = t4 - s3 - t0;
     s3 = t4 + s3 - t2;
-    *y.offset(0 as i32 as isize) = s4 - s7;
-    *y.offset(1 as i32 as isize) = s2 + s1;
-    *y.offset(2 as i32 as isize) = s0 - s3;
-    *y.offset(3 as i32 as isize) = s8 + s5;
-    *y.offset(5 as i32 as isize) = s8 - s5;
-    *y.offset(6 as i32 as isize) = s0 + s3;
-    *y.offset(7 as i32 as isize) = s2 - s1;
-    *y.offset(8 as i32 as isize) = s4 + s7;
+    y[0] = s4 - s7;
+    y[1] = s2 + s1;
+    y[2] = s0 - s3;
+    y[3] = s8 + s5;
+    y[5] = s8 - s5;
+    y[6] = s0 + s3;
+    y[7] = s2 - s1;
+    y[8] = s4 + s7;
 }
 unsafe fn L3_imdct36(
     mut grbuf: *mut f32,
@@ -1175,8 +1175,8 @@ unsafe fn L3_imdct36(
                 + *grbuf.offset((4 as i32 * i + 4 as i32) as isize));
             i += 1;
         }
-        L3_dct3_9(co.as_mut_ptr());
-        L3_dct3_9(si.as_mut_ptr());
+        L3_dct3_9(&mut co);
+        L3_dct3_9(&mut si);
         si[1 as i32 as usize] = -si[1 as i32 as usize];
         si[3 as i32 as usize] = -si[3 as i32 as usize];
         si[5 as i32 as usize] = -si[5 as i32 as usize];
