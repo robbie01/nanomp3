@@ -1393,11 +1393,7 @@ unsafe fn L3_save_reservoir(
         remains = 511 as i32;
     }
     if remains > 0 as i32 {
-        core::ptr::copy(
-            ((*s).maindata).as_mut_ptr().offset(pos as isize),
-            ((*h).reserv_buf).as_mut_ptr(),
-            remains as usize,
-        );
+        h.reserv_buf[..remains as usize].copy_from_slice(&s.maindata[pos as usize..(pos+remains) as usize]);
     }
     (*h).reserv = remains;
 }
@@ -2202,7 +2198,7 @@ pub unsafe fn mp3dec_decode_frame(
         }
     }
     if frame_size == 0 {
-        core::ptr::write_bytes(dec, 0, 1);
+        *dec = mp3dec_t::new();
         i = mp3d_find_frame(
             mp3,
             &mut (*dec).free_format_bytes,
@@ -2264,7 +2260,7 @@ pub unsafe fn mp3dec_decode_frame(
             igr = 0;
             while igr < (if hdr[1] & 0x8 != 0 { 2 } else { 1 })
             {
-                core::ptr::write_bytes(&raw mut scratch.grbuf, 0, 1);
+                scratch.grbuf.as_flattened_mut().fill(0f32);
                 L3_decode(
                     dec,
                     &mut scratch,
