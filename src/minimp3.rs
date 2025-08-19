@@ -1198,17 +1198,17 @@ unsafe fn L3_imdct36(
         overlap = overlap.offset(9 as i32 as isize);
     }
 }
-unsafe fn L3_idct3(
+fn L3_idct3(
     x0: f32,
     x1: f32,
     x2: f32,
-    dst: *mut f32,
+    dst: &mut [f32],
 ) {
     let m1: f32 = x1 * 0.86602540f32;
     let a1: f32 = x0 - x2 * 0.5f32;
-    *dst.offset(1 as i32 as isize) = x0 + x2;
-    *dst.offset(0 as i32 as isize) = a1 + m1;
-    *dst.offset(2 as i32 as isize) = a1 - m1;
+    dst[1] = x0 + x2;
+    dst[0] = a1 + m1;
+    dst[2] = a1 - m1;
 }
 unsafe fn L3_imdct12(
     x: *mut f32,
@@ -1222,13 +1222,13 @@ unsafe fn L3_imdct12(
         -*x.offset(0 as i32 as isize),
         *x.offset(6 as i32 as isize) + *x.offset(3 as i32 as isize),
         *x.offset(12 as i32 as isize) + *x.offset(9 as i32 as isize),
-        co.as_mut_ptr(),
+        &mut co,
     );
     L3_idct3(
         *x.offset(15 as i32 as isize),
         *x.offset(12 as i32 as isize) - *x.offset(9 as i32 as isize),
         *x.offset(6 as i32 as isize) - *x.offset(3 as i32 as isize),
-        si.as_mut_ptr(),
+        &mut si,
     );
     si[1 as i32 as usize] = -si[1 as i32 as usize];
     i = 0 as i32;
