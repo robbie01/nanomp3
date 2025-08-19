@@ -18,7 +18,7 @@ unsafe fn memcpy(dst: *mut (), src: *const (), count: usize) {
 pub struct mp3dec_frame_info_t {
     pub frame_bytes: usize,
     pub frame_offset: usize,
-    pub channels: i32,
+    pub channels: u32,
     pub hz: i32,
     pub layer: u8,
     pub bitrate_kbps: i32,
@@ -417,7 +417,7 @@ unsafe fn L3_decode_scalefactors(
     bs: &mut bs_t,
     gr: *const L3_gr_info_t,
     scf: *mut f32,
-    ch: i32,
+    ch: u32,
 ) {
     let mut scf_partition: *const u8 = (L3_DECODE_SCALEFACTORS_G_SCM_PARTITIONS[(((*gr).n_short_sfb != 0)
         as i32 + ((*gr).n_long_sfb == 0) as i32) as usize])
@@ -1439,10 +1439,9 @@ unsafe fn L3_decode(
     h: &mut mp3dec_t,
     s: *mut mp3dec_scratch_t,
     mut gr_info: *mut L3_gr_info_t,
-    nch: i32,
+    nch: u32,
 ) {
-    let mut ch: i32 = 0;
-    ch = 0 as i32;
+    let mut ch: u32 = 0;
     while ch < nch {
         let layer3gr_limit: i32 = (*s).bs.pos
             + (*gr_info.offset(ch as isize)).part_23_length as i32;
@@ -1478,7 +1477,7 @@ unsafe fn L3_decode(
             576 as i32,
         );
     }
-    ch = 0 as i32;
+    ch = 0;
     while ch < nch {
         let mut aa_bands: i32 = 31 as i32;
         let n_long_bands: i32 = (if (*gr_info).mixed_block_flag
@@ -1517,9 +1516,9 @@ unsafe fn L3_decode(
         gr_info = gr_info.offset(1);
     }
 }
-unsafe fn mp3d_DCT_II(grbuf: *mut f32, n: i32) {
+unsafe fn mp3d_DCT_II(grbuf: *mut f32, n: u32) {
     let mut i: i32 = 0;
-    let mut k: i32 = 0 as i32;
+    let mut k = 0;
     while k < n {
         let mut t: [[f32; 8]; 4] = [[0.; 8]; 4];
         let mut x: *mut f32 = core::ptr::null_mut();
@@ -1651,8 +1650,8 @@ fn mp3d_scale_pcm(sample: f32) -> f32 {
 }
 
 unsafe fn mp3d_synth_pair(
-    pcm: *mut mp3d_sample_t,
-    nch: i32,
+    pcm: &mut [mp3d_sample_t],
+    nch: u32,
     mut z: *const f32,
 ) {
     let mut a: f32 = 0.;
@@ -1685,7 +1684,7 @@ unsafe fn mp3d_synth_pair(
     a
         += *z.offset((7 as i32 * 64 as i32) as isize)
             * 75038 as i32 as f32;
-    *pcm.offset(0 as i32 as isize) = mp3d_scale_pcm(a);
+    pcm[0] = mp3d_scale_pcm(a);
     z = z.offset(2 as i32 as isize);
     a = *z.offset((14 as i32 * 64 as i32) as isize)
         * 104 as i32 as f32;
@@ -1710,18 +1709,18 @@ unsafe fn mp3d_synth_pair(
     a
         += *z.offset((0 as i32 * 64 as i32) as isize)
             * -(5 as i32) as f32;
-    *pcm.offset((16 as i32 * nch) as isize) = mp3d_scale_pcm(a);
+    pcm[(16 * nch) as usize] = mp3d_scale_pcm(a);
 }
 unsafe fn mp3d_synth(
     xl: *mut f32,
-    dstl: *mut mp3d_sample_t,
-    nch: i32,
+    dstl: &mut [mp3d_sample_t],
+    nch: u32,
     lins: *mut f32,
 ) {
     let mut i: i32 = 0;
     let xr: *mut f32 = xl
-        .offset((576 as i32 * (nch - 1 as i32)) as isize);
-    let dstr: *mut mp3d_sample_t = dstl.offset((nch - 1 as i32) as isize);
+        .offset((576 * (nch - 1)) as isize);
+    let dstr_off = (nch-1) as usize;
 
     let zlin: *mut f32 = lins
         .offset((15 as i32 * 64 as i32) as isize);
@@ -1761,14 +1760,14 @@ unsafe fn mp3d_synth(
             (4 as i32 * 31 as i32 + 3 as i32) as isize,
         ) = *xr.offset(1 as i32 as isize);
     mp3d_synth_pair(
-        dstr,
+        &mut dstl[dstr_off..],
         nch,
         lins
             .offset((4 as i32 * 15 as i32) as isize)
             .offset(1 as i32 as isize),
     );
     mp3d_synth_pair(
-        dstr.offset((32 as i32 * nch) as isize),
+        &mut dstl[dstr_off+(32 * nch) as usize..],
         nch,
         lins
             .offset((4 as i32 * 15 as i32) as isize)
@@ -1781,60 +1780,60 @@ unsafe fn mp3d_synth(
         lins.offset((4 as i32 * 15 as i32) as isize),
     );
     mp3d_synth_pair(
-        dstl.offset((32 as i32 * nch) as isize),
+        &mut dstl[(32 * nch) as usize..],
         nch,
         lins
             .offset((4 as i32 * 15 as i32) as isize)
             .offset(64 as i32 as isize),
     );
-    i = 14 as i32;
-    while i >= 0 as i32 {
+    i = 14;
+    while i >= 0 {
         let mut a: [f32; 4] = [0.; 4];
         let mut b: [f32; 4] = [0.; 4];
         *zlin
             .offset(
-                (4 as i32 * i) as isize,
-            ) = *xl.offset((18 as i32 * (31 as i32 - i)) as isize);
+                (4 * i) as isize,
+            ) = *xl.offset((18 * (31 - i)) as isize);
         *zlin
             .offset(
-                (4 as i32 * i + 1 as i32) as isize,
-            ) = *xr.offset((18 as i32 * (31 as i32 - i)) as isize);
+                (4 * i + 1) as isize,
+            ) = *xr.offset((18 * (31 - i)) as isize);
         *zlin
             .offset(
-                (4 as i32 * i + 2 as i32) as isize,
+                (4 * i + 2) as isize,
             ) = *xl
             .offset(
-                (1 as i32 + 18 as i32 * (31 as i32 - i)) as isize,
+                (1 + 18 * (31 - i)) as isize,
             );
         *zlin
             .offset(
-                (4 as i32 * i + 3 as i32) as isize,
+                (4 * i + 3) as isize,
             ) = *xr
             .offset(
-                (1 as i32 + 18 as i32 * (31 as i32 - i)) as isize,
+                (1 + 18 * (31 - i)) as isize,
             );
         *zlin
             .offset(
-                (4 as i32 * (i + 16 as i32)) as isize,
+                (4 * (i + 16)) as isize,
             ) = *xl
             .offset(
-                (1 as i32 + 18 as i32 * (1 as i32 + i)) as isize,
+                (1 + 18 * (1 + i)) as isize,
             );
         *zlin
             .offset(
-                (4 as i32 * (i + 16 as i32) + 1 as i32) as isize,
+                (4 * (i + 16) + 1) as isize,
             ) = *xr
             .offset(
-                (1 as i32 + 18 as i32 * (1 as i32 + i)) as isize,
+                (1 + 18 * (1 + i)) as isize,
             );
         *zlin
             .offset(
-                (4 as i32 * (i - 16 as i32) + 2 as i32) as isize,
-            ) = *xl.offset((18 as i32 * (1 as i32 + i)) as isize);
+                (4 * (i - 16) + 2) as isize,
+            ) = *xl.offset((18 * (1 + i)) as isize);
         *zlin
             .offset(
-                (4 as i32 * (i - 16 as i32) + 3 as i32) as isize,
-            ) = *xr.offset((18 as i32 * (1 as i32 + i)) as isize);
+                (4 * (i - 16) + 3) as isize,
+            ) = *xr.offset((18 * (1 + i)) as isize);
         let mut j: i32 = 0;
         let fresh22 = w;
         w = w.offset(1);
@@ -1844,16 +1843,16 @@ unsafe fn mp3d_synth(
         let w1: f32 = *fresh23;
         let vz: *mut f32 = zlin
             .offset(
-                (4 as i32 * i - 0 as i32 * 64 as i32) as isize,
+                (4 * i - 0 * 64) as isize,
             );
         let vy: *mut f32 = zlin
             .offset(
-                (4 as i32 * i
-                    - (15 as i32 - 0 as i32) * 64 as i32)
+                (4 * i
+                    - (15 - 0) * 64)
                     as isize,
             );
-        j = 0 as i32;
-        while j < 4 as i32 {
+        j = 0;
+        while j < 4 {
             b[j as usize] = *vz.offset(j as isize) * w1 + *vy.offset(j as isize) * w0;
             a[j as usize] = *vz.offset(j as isize) * w0 - *vy.offset(j as isize) * w1;
             j += 1;
@@ -1867,12 +1866,12 @@ unsafe fn mp3d_synth(
         let w1_0: f32 = *fresh25;
         let vz_0: *mut f32 = zlin
             .offset(
-                (4 as i32 * i - 1 as i32 * 64 as i32) as isize,
+                (4 * i - 1 * 64) as isize,
             );
         let vy_0: *mut f32 = zlin
             .offset(
-                (4 as i32 * i
-                    - (15 as i32 - 1 as i32) * 64 as i32)
+                (4 * i
+                    - (15 - 1) * 64)
                     as isize,
             );
         j_0 = 0 as i32;
@@ -1892,12 +1891,12 @@ unsafe fn mp3d_synth(
         let w1_1: f32 = *fresh27;
         let vz_1: *mut f32 = zlin
             .offset(
-                (4 as i32 * i - 2 as i32 * 64 as i32) as isize,
+                (4 * i - 2 * 64) as isize,
             );
         let vy_1: *mut f32 = zlin
             .offset(
-                (4 as i32 * i
-                    - (15 as i32 - 2 as i32) * 64 as i32)
+                (4 * i
+                    - (15 - 2) * 64)
                     as isize,
             );
         j_1 = 0 as i32;
@@ -1917,12 +1916,12 @@ unsafe fn mp3d_synth(
         let w1_2: f32 = *fresh29;
         let vz_2: *mut f32 = zlin
             .offset(
-                (4 as i32 * i - 3 as i32 * 64 as i32) as isize,
+                (4 * i - 3 * 64) as isize,
             );
         let vy_2: *mut f32 = zlin
             .offset(
-                (4 as i32 * i
-                    - (15 as i32 - 3 as i32) * 64 as i32)
+                (4 * i
+                    - (15 - 3) * 64)
                     as isize,
             );
         j_2 = 0 as i32;
@@ -1942,12 +1941,12 @@ unsafe fn mp3d_synth(
         let w1_3: f32 = *fresh31;
         let vz_3: *mut f32 = zlin
             .offset(
-                (4 as i32 * i - 4 as i32 * 64 as i32) as isize,
+                (4 * i - 4 * 64) as isize,
             );
         let vy_3: *mut f32 = zlin
             .offset(
-                (4 as i32 * i
-                    - (15 as i32 - 4 as i32) * 64 as i32)
+                (4 * i
+                    - (15 - 4) * 64)
                     as isize,
             );
         j_3 = 0 as i32;
@@ -1967,12 +1966,12 @@ unsafe fn mp3d_synth(
         let w1_4: f32 = *fresh33;
         let vz_4: *mut f32 = zlin
             .offset(
-                (4 as i32 * i - 5 as i32 * 64 as i32) as isize,
+                (4 * i - 5 * 64) as isize,
             );
         let vy_4: *mut f32 = zlin
             .offset(
-                (4 as i32 * i
-                    - (15 as i32 - 5 as i32) * 64 as i32)
+                (4 * i
+                    - (15 - 5) * 64)
                     as isize,
             );
         j_4 = 0 as i32;
@@ -1992,12 +1991,12 @@ unsafe fn mp3d_synth(
         let w1_5: f32 = *fresh35;
         let vz_5: *mut f32 = zlin
             .offset(
-                (4 as i32 * i - 6 as i32 * 64 as i32) as isize,
+                (4 * i - 6 * 64) as isize,
             );
         let vy_5: *mut f32 = zlin
             .offset(
-                (4 as i32 * i
-                    - (15 as i32 - 6 as i32) * 64 as i32)
+                (4 * i
+                    - (15 - 6) * 64)
                     as isize,
             );
         j_5 = 0 as i32;
@@ -2017,12 +2016,12 @@ unsafe fn mp3d_synth(
         let w1_6: f32 = *fresh37;
         let vz_6: *mut f32 = zlin
             .offset(
-                (4 as i32 * i - 7 as i32 * 64 as i32) as isize,
+                (4 * i - 7 * 64) as isize,
             );
         let vy_6: *mut f32 = zlin
             .offset(
-                (4 as i32 * i
-                    - (15 as i32 - 7 as i32) * 64 as i32)
+                (4 * i
+                    - (15 - 7) * 64)
                     as isize,
             );
         j_6 = 0 as i32;
@@ -2033,53 +2032,28 @@ unsafe fn mp3d_synth(
                 += *vy_6.offset(j_6 as isize) * w1_6 - *vz_6.offset(j_6 as isize) * w0_6;
             j_6 += 1;
         }
-        *dstr
-            .offset(
-                ((15 as i32 - i) * nch) as isize,
-            ) = mp3d_scale_pcm(a[1 as i32 as usize]);
-        *dstr
-            .offset(
-                ((17 as i32 + i) * nch) as isize,
-            ) = mp3d_scale_pcm(b[1 as i32 as usize]);
-        *dstl
-            .offset(
-                ((15 as i32 - i) * nch) as isize,
-            ) = mp3d_scale_pcm(a[0 as i32 as usize]);
-        *dstl
-            .offset(
-                ((17 as i32 + i) * nch) as isize,
-            ) = mp3d_scale_pcm(b[0 as i32 as usize]);
-        *dstr
-            .offset(
-                ((47 as i32 - i) * nch) as isize,
-            ) = mp3d_scale_pcm(a[3 as i32 as usize]);
-        *dstr
-            .offset(
-                ((49 as i32 + i) * nch) as isize,
-            ) = mp3d_scale_pcm(b[3 as i32 as usize]);
-        *dstl
-            .offset(
-                ((47 as i32 - i) * nch) as isize,
-            ) = mp3d_scale_pcm(a[2 as i32 as usize]);
-        *dstl
-            .offset(
-                ((49 as i32 + i) * nch) as isize,
-            ) = mp3d_scale_pcm(b[2 as i32 as usize]);
+        dstl[dstr_off+((15 - i as u32) * nch) as usize] = mp3d_scale_pcm(a[1]);
+        dstl[dstr_off+((17 + i as u32) * nch) as usize] = mp3d_scale_pcm(b[1]);
+        dstl[((15 - i as u32) * nch) as usize] = mp3d_scale_pcm(a[0]);
+        dstl[((17 + i as u32) * nch) as usize] = mp3d_scale_pcm(b[0 as i32 as usize]);
+        dstl[dstr_off+((47 - i as u32) * nch) as usize] = mp3d_scale_pcm(a[3 as i32 as usize]);
+        dstl[dstr_off+((49 + i as u32) * nch) as usize] = mp3d_scale_pcm(b[3 as i32 as usize]);
+        dstl[((47 - i as u32) * nch) as usize] = mp3d_scale_pcm(a[2 as i32 as usize]);
+        dstl[((49 + i as u32) * nch) as usize] = mp3d_scale_pcm(b[2 as i32 as usize]);
         i -= 1;
     }
 }
 unsafe fn mp3d_synth_granule(
     qmf_state: *mut f32,
     grbuf: *mut f32,
-    nbands: i32,
-    nch: i32,
-    pcm: *mut mp3d_sample_t,
+    nbands: u32,
+    nch: u32,
+    pcm: &mut [mp3d_sample_t],
     lins: *mut f32,
 ) {
-    let mut i: i32 = 0;
-    i = 0 as i32;
-    while i < nch {
-        mp3d_DCT_II(grbuf.offset((576 as i32 * i) as isize), nbands);
+    let mut i: usize = 0;
+    while i < nch as usize {
+        mp3d_DCT_II(grbuf.offset((576 * i) as isize), nbands);
         i += 1;
     }
     memcpy(
@@ -2089,19 +2063,19 @@ unsafe fn mp3d_synth_granule(
             .wrapping_mul(15 as i32 as usize)
             .wrapping_mul(64 as i32 as usize),
     );
-    i = 0 as i32;
-    while i < nbands {
+    i = 0;
+    while i < nbands as usize {
         mp3d_synth(
             grbuf.offset(i as isize),
-            pcm.offset((32 as i32 * nch * i) as isize),
+            &mut pcm[32 * nch as usize * i..],
             nch,
-            lins.offset((i * 64 as i32) as isize),
+            lins.offset((i * 64) as isize),
         );
-        i += 2 as i32;
+        i += 2;
     }
     memcpy(
         qmf_state as *mut (),
-        lins.offset((nbands * 64 as i32) as isize) as *const (),
+        lins.offset((nbands * 64) as isize) as *const (),
         (::core::mem::size_of::<f32>() as usize)
             .wrapping_mul(15 as i32 as usize)
             .wrapping_mul(64 as i32 as usize),
@@ -2177,11 +2151,11 @@ fn mp3dec_init(dec: &mut mp3dec_t) {
 pub unsafe fn mp3dec_decode_frame(
     dec: &mut mp3dec_t,
     mp3: &[u8],
-    mut pcm: *mut mp3d_sample_t,
-    info: *mut mp3dec_frame_info_t,
+    mut pcm: &mut [mp3d_sample_t],
+    info: &mut mp3dec_frame_info_t,
 ) -> i32 {
     let mut i: usize = 0;
-    let mut igr: i32 = 0;
+    let mut igr = 0u32;
     let mut frame_size: usize = 0;
     let mut success: i32 = 1 as i32;
     let mut bs_frame = bs_t {
@@ -2262,7 +2236,7 @@ pub unsafe fn mp3dec_decode_frame(
         - (hdr[1] >> 1
             & 3);
     (*info).bitrate_kbps = hdr_bitrate_kbps(hdr) as i32;
-    if pcm.is_null() {
+    if pcm.is_empty() {
         return hdr_frame_samples(hdr) as i32;
     }
     bs_init(
@@ -2292,7 +2266,7 @@ pub unsafe fn mp3dec_decode_frame(
             main_data_begin,
         );
         if success != 0 {
-            igr = 0 as i32;
+            igr = 0;
             while igr < (if hdr[1] & 0x8 != 0 { 2 } else { 1 })
             {
                 core::ptr::write_bytes(&raw mut scratch.grbuf, 0, 1);
@@ -2307,13 +2281,13 @@ pub unsafe fn mp3dec_decode_frame(
                 mp3d_synth_granule(
                     ((*dec).qmf_state).as_mut_ptr(),
                     scratch.grbuf.as_flattened_mut().as_mut_ptr(),
-                    18 as i32,
+                    18,
                     (*info).channels,
                     pcm,
                     scratch.syn.as_flattened_mut().as_mut_ptr(),
                 );
                 igr += 1;
-                pcm = pcm.offset((576 as i32 * (*info).channels) as isize);
+                pcm = &mut pcm[576 * ((*info).channels as usize)..];
             }
         }
         L3_save_reservoir(dec, &mut scratch);

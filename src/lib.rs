@@ -59,7 +59,7 @@ impl Decoder {
         let samples = unsafe { minimp3::mp3dec_decode_frame(
             &mut self.0,
             mp3,
-            pcm.as_mut_ptr(),
+            pcm,
             &mut info
         ) };
 
