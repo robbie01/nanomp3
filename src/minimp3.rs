@@ -1072,29 +1072,22 @@ unsafe fn L3_reorder(
             .wrapping_mul(::core::mem::size_of::<f32>() as usize),
     );
 }
-unsafe fn L3_antialias(
-    mut grbuf: *mut f32,
-    mut nbands: i32,
+fn L3_antialias(
+    mut grbuf: &mut [f32],
+    nbands: i32,
 ) {
-    while nbands > 0 as i32 {
+    for _ in 0..nbands {
         let mut i: i32 = 0 as i32;
         while i < 8 as i32 {
-            let u: f32 = *grbuf.offset((18 as i32 + i) as isize);
-            let d: f32 = *grbuf.offset((17 as i32 - i) as isize);
-            *grbuf
-                .offset(
-                    (18 as i32 + i) as isize,
-                ) = u * L3_ANTIALIAS_G_AA[0 as i32 as usize][i as usize]
+            let u: f32 = grbuf[(18 as i32 + i) as usize];
+            let d: f32 = grbuf[(17 as i32 - i) as usize];
+            grbuf[(18 as i32 + i) as usize] = u * L3_ANTIALIAS_G_AA[0 as i32 as usize][i as usize]
                 - d * L3_ANTIALIAS_G_AA[1 as i32 as usize][i as usize];
-            *grbuf
-                .offset(
-                    (17 as i32 - i) as isize,
-                ) = u * L3_ANTIALIAS_G_AA[1 as i32 as usize][i as usize]
+            grbuf[(17 as i32 - i) as usize] = u * L3_ANTIALIAS_G_AA[1 as i32 as usize][i as usize]
                 + d * L3_ANTIALIAS_G_AA[0 as i32 as usize][i as usize];
             i += 1;
         }
-        nbands -= 1;
-        grbuf = grbuf.offset(18 as i32 as isize);
+        grbuf = &mut grbuf[18..];
     }
 }
 unsafe fn L3_dct3_9(y: *mut f32) {
@@ -1485,7 +1478,7 @@ unsafe fn L3_decode(
                 (gr_info[0].sfbtab).offset(gr_info[0].n_long_sfb as i32 as isize),
             );
         }
-        L3_antialias(((*s).grbuf[ch as usize]).as_mut_ptr(), aa_bands);
+        L3_antialias(&mut s.grbuf[ch as usize], aa_bands);
         L3_imdct_gr(
             ((*s).grbuf[ch as usize]).as_mut_ptr(),
             ((*h).mdct_overlap[ch as usize]).as_mut_ptr(),
