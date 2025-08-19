@@ -1403,7 +1403,7 @@ unsafe fn L3_imdct_gr(
     };
 }
 unsafe fn L3_save_reservoir(
-    mut h: *mut mp3dec_t,
+    mut h: &mut mp3dec_t,
     mut s: *mut mp3dec_scratch_t,
 ) {
     let mut pos: i32 = (((*s).bs.pos + 7 as i32) as u32)
@@ -1425,7 +1425,7 @@ unsafe fn L3_save_reservoir(
     (*h).reserv = remains;
 }
 unsafe fn L3_restore_reservoir(
-    mut h: *mut mp3dec_t,
+    mut h: &mut mp3dec_t,
     bs: &mut bs_t,
     mut s: *mut mp3dec_scratch_t,
     mut main_data_begin: i32,
@@ -1460,7 +1460,7 @@ unsafe fn L3_restore_reservoir(
     return ((*h).reserv >= main_data_begin) as i32;
 }
 unsafe fn L3_decode(
-    mut h: *mut mp3dec_t,
+    mut h: &mut mp3dec_t,
     mut s: *mut mp3dec_scratch_t,
     mut gr_info: *mut L3_gr_info_t,
     mut nch: i32,
@@ -2204,12 +2204,12 @@ unsafe fn mp3d_find_frame(
     return mp3_bytes;
 }
 
-pub const unsafe fn mp3dec_init(mut dec: *mut mp3dec_t) {
+pub const unsafe fn mp3dec_init(mut dec: &mut mp3dec_t) {
     (*dec).header[0 as i32 as usize] = 0 as i32 as u8;
 }
 
 pub unsafe fn mp3dec_decode_frame(
-    mut dec: *mut mp3dec_t,
+    mut dec: &mut mp3dec_t,
     mut mp3: *const u8,
     mut mp3_bytes: i32,
     mut pcm: *mut mp3d_sample_t,
