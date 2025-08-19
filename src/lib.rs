@@ -2,6 +2,9 @@
 
 mod minimp3;
 
+#[cfg(test)]
+mod tests;
+
 /// The minimum length of the PCM output buffer.
 pub const MAX_SAMPLES_PER_FRAME: usize = 1152*2;
 
