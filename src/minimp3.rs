@@ -1293,19 +1293,18 @@ unsafe fn L3_imdct_short(
         grbuf = grbuf.offset(18 as i32 as isize);
     }
 }
-unsafe fn L3_change_sign(mut grbuf: *mut f32) {
-    let mut b: i32 = 0;
-    let mut i: i32 = 0;
-    b = 0 as i32;
-    grbuf = grbuf.offset(18 as i32 as isize);
-    while b < 32 as i32 {
-        i = 1 as i32;
-        while i < 18 as i32 {
-            *grbuf.offset(i as isize) = -*grbuf.offset(i as isize);
-            i += 2 as i32;
+fn L3_change_sign(mut grbuf: &mut [f32]) {
+    let mut b = 0u32;
+    let mut i = 0usize;
+    grbuf = &mut grbuf[18..];
+    while b < 32 {
+        i = 1;
+        while i < 18 {
+            grbuf[i] = -grbuf[i];
+            i += 2;
         }
-        b += 2 as i32;
-        grbuf = grbuf.offset(36 as i32 as isize);
+        b += 2;
+        if b < 32 { grbuf = &mut grbuf[36..]; }
     }
 }
 unsafe fn L3_imdct_gr(
@@ -1474,7 +1473,7 @@ unsafe fn L3_decode(
             gr_info[0].block_type as u32,
             n_long_bands as u32,
         );
-        L3_change_sign(((*s).grbuf[ch as usize]).as_mut_ptr());
+        L3_change_sign(&mut (*s).grbuf[ch as usize]);
         ch += 1;
         gr_info = &mut gr_info[1..];
     }
