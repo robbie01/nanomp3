@@ -413,7 +413,7 @@ unsafe fn L3_read_scalefactors(
     *fresh3 = *fresh2;
     *scf.offset(0 as i32 as isize) = *fresh3;
 }
-unsafe fn L3_ldexp_q2(
+fn L3_ldexp_q2(
     mut y: f32,
     mut exp_q2: i32,
 ) -> f32 {
@@ -550,7 +550,7 @@ unsafe fn L3_decode_scalefactors(
     }
 }
 
-unsafe fn L3_pow_43(mut x: i32) -> f32 {
+fn L3_pow_43(mut x: i32) -> f32 {
     let mut frac: f32 = 0.;
     let mut sign: i32 = 0;
     let mut mult: i32 = 256 as i32;
@@ -2204,7 +2204,7 @@ unsafe fn mp3d_find_frame(
     return mp3_bytes;
 }
 
-pub const unsafe fn mp3dec_init(mut dec: &mut mp3dec_t) {
+pub const fn mp3dec_init(mut dec: &mut mp3dec_t) {
     (*dec).header[0 as i32 as usize] = 0 as i32 as u8;
 }
 
