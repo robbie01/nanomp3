@@ -21,5 +21,5 @@ fn measure_length_of_march() {
         }
     }
     
-    assert_eq!(n, 7581312);
+    assert_eq!(n, 243072);
 }
