@@ -53,7 +53,6 @@ type mp3d_sample_t = f32;
 struct mp3dec_scratch_t {
     bs: bs_t,
     maindata: [u8; 2815],
-    gr_info: [L3_gr_info_t; 4],
     grbuf: [[f32; 576]; 2],
     scf: [f32; 40],
     syn: [[f32; 64]; 33],
@@ -87,14 +86,16 @@ struct bs_t {
     limit: i32,
 }
 fn bs_init(
-    bs: &mut bs_t,
     data: *const u8,
     bytes: i32,
-) {
-    bs.buf = data;
-    bs.pos = 0 as i32;
-    bs.limit = bytes * 8 as i32;
+) -> bs_t {
+    bs_t {
+        buf: data,
+        pos: 0,
+        limit: bytes * 8
+    }
 }
+
 unsafe fn get_bits(bs: &mut bs_t, n: i32) -> u32 {
     let mut next: u32 = 0;
     let mut cache: u32 = 0 as i32 as u32;
@@ -415,7 +416,7 @@ unsafe fn L3_decode_scalefactors(
     hdr: *const u8,
     ist_pos: *mut u8,
     bs: &mut bs_t,
-    gr: *const L3_gr_info_t,
+    gr: &L3_gr_info_t,
     scf: *mut f32,
     ch: u32,
 ) {
@@ -550,7 +551,7 @@ fn L3_pow_43(mut x: i32) -> f32 {
 unsafe fn L3_huffman(
     mut dst: *mut f32,
     bs: &mut bs_t,
-    gr_info: *const L3_gr_info_t,
+    gr_info: &L3_gr_info_t,
     mut scf: *const f32,
     layer3gr_limit: i32,
 ) {
@@ -977,25 +978,25 @@ unsafe fn L3_stereo_process(
 unsafe fn L3_intensity_stereo(
     left: *mut f32,
     ist_pos: *mut u8,
-    gr: *const L3_gr_info_t,
+    gr: &[L3_gr_info_t],
     hdr: *const u8,
 ) {
     let mut max_band: [i32; 3] = [0; 3];
-    let n_sfb: i32 = (*gr).n_long_sfb as i32
-        + (*gr).n_short_sfb as i32;
+    let n_sfb: i32 = gr[0].n_long_sfb as i32
+        + gr[0].n_short_sfb as i32;
     let mut i: i32 = 0;
-    let max_blocks: i32 = if (*gr).n_short_sfb as i32 != 0 {
+    let max_blocks: i32 = if gr[0].n_short_sfb as i32 != 0 {
         3 as i32
     } else {
         1 as i32
     };
     L3_stereo_top_band(
         left.offset(576 as i32 as isize),
-        (*gr).sfbtab,
+        gr[0].sfbtab,
         n_sfb,
         max_band.as_mut_ptr(),
     );
-    if (*gr).n_long_sfb != 0 {
+    if gr[0].n_long_sfb != 0 {
         max_band[2 as i32
             as usize] = if (if max_band[0 as i32 as usize]
             < max_band[1 as i32 as usize]
@@ -1040,10 +1041,10 @@ unsafe fn L3_intensity_stereo(
     L3_stereo_process(
         left,
         ist_pos,
-        (*gr).sfbtab,
+        gr[0].sfbtab,
         hdr,
         max_band.as_mut_ptr(),
-        (*gr.offset(1 as i32 as isize)).scalefac_compress as i32
+        gr[1].scalefac_compress as i32
             & 1 as i32,
     );
 }
@@ -1432,31 +1433,31 @@ unsafe fn L3_restore_reservoir(
             as *const (),
         frame_bytes as usize,
     );
-    bs_init(&mut (*s).bs, ((*s).maindata).as_mut_ptr(), bytes_have + frame_bytes);
+    s.bs = bs_init(((*s).maindata).as_mut_ptr(), bytes_have + frame_bytes);
     return ((*h).reserv >= main_data_begin) as i32;
 }
 unsafe fn L3_decode(
     h: &mut mp3dec_t,
-    s: *mut mp3dec_scratch_t,
-    mut gr_info: *mut L3_gr_info_t,
+    s: &mut mp3dec_scratch_t,
+    mut gr_info: &mut [L3_gr_info_t],
     nch: u32,
 ) {
     let mut ch: u32 = 0;
     while ch < nch {
         let layer3gr_limit: i32 = (*s).bs.pos
-            + (*gr_info.offset(ch as isize)).part_23_length as i32;
+            + gr_info[ch as usize].part_23_length as i32;
         L3_decode_scalefactors(
             ((*h).header).as_mut_ptr(),
             ((*s).ist_pos[ch as usize]).as_mut_ptr(),
             &mut (*s).bs,
-            gr_info.offset(ch as isize),
+            &gr_info[ch as usize],
             ((*s).scf).as_mut_ptr(),
             ch,
         );
         L3_huffman(
             ((*s).grbuf[ch as usize]).as_mut_ptr(),
             &mut (*s).bs,
-            gr_info.offset(ch as isize),
+            &gr_info[ch as usize],
             ((*s).scf).as_mut_ptr(),
             layer3gr_limit,
         );
@@ -1480,7 +1481,7 @@ unsafe fn L3_decode(
     ch = 0;
     while ch < nch {
         let mut aa_bands: i32 = 31 as i32;
-        let n_long_bands: i32 = (if (*gr_info).mixed_block_flag
+        let n_long_bands: i32 = (if gr_info[0].mixed_block_flag
             as i32 != 0
         {
             2 as i32
@@ -1494,26 +1495,26 @@ unsafe fn L3_decode(
                     + ((*h).header[1 as i32 as usize] as i32
                         >> 4 as i32 & 1 as i32)) * 3 as i32
                 == 2 as i32) as i32;
-        if (*gr_info).n_short_sfb != 0 {
+        if gr_info[0].n_short_sfb != 0 {
             aa_bands = n_long_bands - 1 as i32;
             L3_reorder(
                 ((*s).grbuf[ch as usize])
                     .as_mut_ptr()
                     .offset((n_long_bands * 18 as i32) as isize),
                 (*s).syn.as_flattened_mut().as_mut_ptr(),
-                ((*gr_info).sfbtab).offset((*gr_info).n_long_sfb as i32 as isize),
+                (gr_info[0].sfbtab).offset(gr_info[0].n_long_sfb as i32 as isize),
             );
         }
         L3_antialias(((*s).grbuf[ch as usize]).as_mut_ptr(), aa_bands);
         L3_imdct_gr(
             ((*s).grbuf[ch as usize]).as_mut_ptr(),
             ((*h).mdct_overlap[ch as usize]).as_mut_ptr(),
-            (*gr_info).block_type as u32,
+            gr_info[0].block_type as u32,
             n_long_bands as u32,
         );
         L3_change_sign(((*s).grbuf[ch as usize]).as_mut_ptr());
         ch += 1;
-        gr_info = gr_info.offset(1);
+        gr_info = &mut gr_info[1..];
     }
 }
 unsafe fn mp3d_DCT_II(grbuf: *mut f32, n: u32) {
@@ -2158,11 +2159,6 @@ pub unsafe fn mp3dec_decode_frame(
     let mut igr = 0u32;
     let mut frame_size: usize = 0;
     let mut success: i32 = 1 as i32;
-    let mut bs_frame = bs_t {
-        buf: core::ptr::null(),
-        pos: 0,
-        limit: 0,
-    };
     let mut scratch: mp3dec_scratch_t = mp3dec_scratch_t {
         bs: bs_t {
             buf: core::ptr::null(),
@@ -2170,29 +2166,29 @@ pub unsafe fn mp3dec_decode_frame(
             limit: 0,
         },
         maindata: [0; 2815],
-        gr_info: [L3_gr_info_t {
-            sfbtab: core::ptr::null(),
-            part_23_length: 0,
-            big_values: 0,
-            scalefac_compress: 0,
-            global_gain: 0,
-            block_type: 0,
-            mixed_block_flag: 0,
-            n_long_sfb: 0,
-            n_short_sfb: 0,
-            table_select: [0; 3],
-            region_count: [0; 3],
-            subblock_gain: [0; 3],
-            preflag: 0,
-            scalefac_scale: 0,
-            count1_table: 0,
-            scfsi: 0,
-        }; 4],
         grbuf: [[0.; 576]; 2],
         scf: [0.; 40],
         syn: [[0.; 64]; 33],
         ist_pos: [[0; 39]; 2],
     };
+    let mut scratch_gr_info = [L3_gr_info_t {
+        sfbtab: core::ptr::null(),
+        part_23_length: 0,
+        big_values: 0,
+        scalefac_compress: 0,
+        global_gain: 0,
+        block_type: 0,
+        mixed_block_flag: 0,
+        n_long_sfb: 0,
+        n_short_sfb: 0,
+        table_select: [0; 3],
+        region_count: [0; 3],
+        subblock_gain: [0; 3],
+        preflag: 0,
+        scalefac_scale: 0,
+        count1_table: 0,
+        scfsi: 0,
+    }; 4];
     if mp3.len() > 4
         && (*dec).header[0 as i32 as usize] as i32 == 0xff as i32
         && hdr_compare(&dec.header, mp3)
@@ -2239,8 +2235,7 @@ pub unsafe fn mp3dec_decode_frame(
     if pcm.is_empty() {
         return hdr_frame_samples(hdr) as i32;
     }
-    bs_init(
-        &mut bs_frame,
+    let mut bs_frame = bs_init(
         hdr[4..].as_ptr(),
         (frame_size - 4) as i32,
     );
@@ -2250,7 +2245,7 @@ pub unsafe fn mp3dec_decode_frame(
     if (*info).layer == 3 {
         let main_data_begin: i32 = L3_read_side_info(
             &mut bs_frame,
-            (scratch.gr_info).as_mut_ptr(),
+            scratch_gr_info.as_mut_ptr(),
             hdr.as_ptr(),
         );
         if main_data_begin < 0 as i32
@@ -2272,10 +2267,8 @@ pub unsafe fn mp3dec_decode_frame(
                 core::ptr::write_bytes(&raw mut scratch.grbuf, 0, 1);
                 L3_decode(
                     dec,
-                    &raw mut scratch,
-                    (scratch.gr_info)
-                        .as_mut_ptr()
-                        .offset((igr * (*info).channels) as isize),
+                    &mut scratch,
+                    &mut scratch_gr_info[(igr * (*info).channels) as usize..],
                     (*info).channels,
                 );
                 mp3d_synth_granule(
