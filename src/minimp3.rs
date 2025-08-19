@@ -189,28 +189,26 @@ fn hdr_padding(h: &[u8]) -> usize {
 
 unsafe fn L3_read_side_info(
     bs: &mut bs_t,
-    mut gr: *mut L3_gr_info_t,
-    hdr: *const u8,
+    mut gr: &mut [L3_gr_info_t],
+    hdr: &[u8],
 ) -> i32 {
     let mut tables: u32 = 0;
     let mut scfsi: u32 = 0 as i32 as u32;
     let mut main_data_begin: i32 = 0;
     let mut part_23_sum: i32 = 0 as i32;
-    let mut sr_idx: i32 = (*hdr.offset(2 as i32 as isize) as i32
+    let mut sr_idx: i32 = (hdr[2] as i32
         >> 2 as i32 & 3 as i32)
-        + ((*hdr.offset(1 as i32 as isize) as i32 >> 3 as i32
+        + ((hdr[1] as i32 >> 3 as i32
             & 1 as i32)
-            + (*hdr.offset(1 as i32 as isize) as i32 >> 4 as i32
+            + (hdr[1] as i32 >> 4 as i32
                 & 1 as i32)) * 3 as i32;
     sr_idx -= (sr_idx != 0 as i32) as i32;
-    let mut gr_count: i32 = if *hdr.offset(3 as i32 as isize)
-        as i32 & 0xc0 as i32 == 0xc0 as i32
-    {
-        1 as i32
+    let mut gr_count: i32 = if hdr[3] & 0xc0 == 0xc0 {
+        1
     } else {
-        2 as i32
+        2
     };
-    if *hdr.offset(1 as i32 as isize) as i32 & 0x8 as i32 != 0 {
+    if hdr[1] & 0x8 != 0 {
         gr_count *= 2 as i32;
         main_data_begin = get_bits(bs, 9 as i32) as i32;
         scfsi = get_bits(bs, 7 as i32 + gr_count);
@@ -219,113 +217,105 @@ unsafe fn L3_read_side_info(
             as i32;
     }
     loop {
-        if *hdr.offset(3 as i32 as isize) as i32 & 0xc0 as i32
-            == 0xc0 as i32
-        {
+        if hdr[3] & 0xc0 == 0xc0 {
             scfsi <<= 4 as i32;
         }
-        (*gr).part_23_length = get_bits(bs, 12 as i32) as u16;
-        part_23_sum += (*gr).part_23_length as i32;
-        (*gr).big_values = get_bits(bs, 9 as i32) as u16;
-        if (*gr).big_values as i32 > 288 as i32 {
+        gr[0].part_23_length = get_bits(bs, 12 as i32) as u16;
+        part_23_sum += gr[0].part_23_length as i32;
+        gr[0].big_values = get_bits(bs, 9 as i32) as u16;
+        if gr[0].big_values as i32 > 288 as i32 {
             return -(1 as i32);
         }
-        (*gr).global_gain = get_bits(bs, 8 as i32) as u8;
-        (*gr)
+        gr[0].global_gain = get_bits(bs, 8 as i32) as u8;
+        gr[0]
             .scalefac_compress = get_bits(
             bs,
-            if *hdr.offset(1 as i32 as isize) as i32 & 0x8 as i32
-                != 0
-            {
+            if hdr[1] & 0x8 != 0 {
                 4 as i32
             } else {
                 9 as i32
             },
         ) as u16;
-        (*gr).sfbtab = (L3_READ_SIDE_INFO_G_SCF_LONG[sr_idx as usize]).as_ptr();
-        (*gr).n_long_sfb = 22 as i32 as u8;
-        (*gr).n_short_sfb = 0 as i32 as u8;
+        gr[0].sfbtab = (L3_READ_SIDE_INFO_G_SCF_LONG[sr_idx as usize]).as_ptr();
+        gr[0].n_long_sfb = 22 as i32 as u8;
+        gr[0].n_short_sfb = 0 as i32 as u8;
         if get_bits(bs, 1 as i32) != 0 {
-            (*gr).block_type = get_bits(bs, 2 as i32) as u8;
-            if (*gr).block_type == 0 {
+            gr[0].block_type = get_bits(bs, 2 as i32) as u8;
+            if gr[0].block_type == 0 {
                 return -(1 as i32);
             }
-            (*gr).mixed_block_flag = get_bits(bs, 1 as i32) as u8;
-            (*gr).region_count[0 as i32 as usize] = 7 as i32 as u8;
-            (*gr)
+            gr[0].mixed_block_flag = get_bits(bs, 1 as i32) as u8;
+            gr[0].region_count[0 as i32 as usize] = 7 as i32 as u8;
+            gr[0]
                 .region_count[1 as i32 as usize] = 255 as i32 as u8;
-            if (*gr).block_type as i32 == 2 as i32 {
+            if gr[0].block_type as i32 == 2 as i32 {
                 scfsi &= 0xf0f as i32 as u32;
-                if (*gr).mixed_block_flag == 0 {
-                    (*gr)
+                if gr[0].mixed_block_flag == 0 {
+                    gr[0]
                         .region_count[0 as i32
                         as usize] = 8 as i32 as u8;
-                    (*gr).sfbtab = (L3_READ_SIDE_INFO_G_SCF_SHORT[sr_idx as usize]).as_ptr();
-                    (*gr).n_long_sfb = 0 as i32 as u8;
-                    (*gr).n_short_sfb = 39 as i32 as u8;
+                    gr[0].sfbtab = (L3_READ_SIDE_INFO_G_SCF_SHORT[sr_idx as usize]).as_ptr();
+                    gr[0].n_long_sfb = 0 as i32 as u8;
+                    gr[0].n_short_sfb = 39 as i32 as u8;
                 } else {
-                    (*gr).sfbtab = (L3_READ_SIDE_INFO_G_SCF_MIXED[sr_idx as usize]).as_ptr();
-                    (*gr)
-                        .n_long_sfb = (if *hdr.offset(1 as i32 as isize)
-                        as i32 & 0x8 as i32 != 0
-                    {
+                    gr[0].sfbtab = (L3_READ_SIDE_INFO_G_SCF_MIXED[sr_idx as usize]).as_ptr();
+                    gr[0]
+                        .n_long_sfb = (if hdr[1] & 0x8 != 0 {
                         8 as i32
                     } else {
                         6 as i32
                     }) as u8;
-                    (*gr).n_short_sfb = 30 as i32 as u8;
+                    gr[0].n_short_sfb = 30 as i32 as u8;
                 }
             }
             tables = get_bits(bs, 10 as i32);
             tables <<= 5 as i32;
-            (*gr)
+            gr[0]
                 .subblock_gain[0 as i32
                 as usize] = get_bits(bs, 3 as i32) as u8;
-            (*gr)
+            gr[0]
                 .subblock_gain[1 as i32
                 as usize] = get_bits(bs, 3 as i32) as u8;
-            (*gr)
+            gr[0]
                 .subblock_gain[2 as i32
                 as usize] = get_bits(bs, 3 as i32) as u8;
         } else {
-            (*gr).block_type = 0 as i32 as u8;
-            (*gr).mixed_block_flag = 0 as i32 as u8;
+            gr[0].block_type = 0 as i32 as u8;
+            gr[0].mixed_block_flag = 0 as i32 as u8;
             tables = get_bits(bs, 15 as i32);
-            (*gr)
+            gr[0]
                 .region_count[0 as i32
                 as usize] = get_bits(bs, 4 as i32) as u8;
-            (*gr)
+            gr[0]
                 .region_count[1 as i32
                 as usize] = get_bits(bs, 3 as i32) as u8;
-            (*gr)
+            gr[0]
                 .region_count[2 as i32 as usize] = 255 as i32 as u8;
         }
-        (*gr)
+        gr[0]
             .table_select[0 as i32
             as usize] = (tables >> 10 as i32) as u8;
-        (*gr)
+        gr[0]
             .table_select[1 as i32
             as usize] = (tables >> 5 as i32 & 31 as i32 as u32)
             as u8;
-        (*gr)
+        gr[0]
             .table_select[2 as i32
             as usize] = (tables & 31 as i32 as u32) as u8;
-        (*gr)
-            .preflag = (if *hdr.offset(1 as i32 as isize) as i32
-            & 0x8 as i32 != 0
-        {
+        gr[0]
+            .preflag = (if hdr[1] & 0x8 != 0 {
             get_bits(bs, 1 as i32)
         } else {
-            ((*gr).scalefac_compress as i32 >= 500 as i32) as i32
+            (gr[0].scalefac_compress as i32 >= 500 as i32) as i32
                 as u32
         }) as u8;
-        (*gr).scalefac_scale = get_bits(bs, 1 as i32) as u8;
-        (*gr).count1_table = get_bits(bs, 1 as i32) as u8;
-        (*gr)
+        gr[0].scalefac_scale = get_bits(bs, 1 as i32) as u8;
+        gr[0].count1_table = get_bits(bs, 1 as i32) as u8;
+        gr[0]
             .scfsi = (scfsi >> 12 as i32 & 15 as i32 as u32)
             as u8;
         scfsi <<= 4 as i32;
-        gr = gr.offset(1);
+        gr = &mut gr[1..];
         gr_count -= 1;
         if !(gr_count != 0) {
             break;
@@ -1518,9 +1508,8 @@ unsafe fn mp3d_DCT_II(grbuf: *mut f32, n: u32) {
     let mut k = 0;
     while k < n {
         let mut t: [[f32; 8]; 4] = [[0.; 8]; 4];
-        let mut x: *mut f32 = core::ptr::null_mut();
+        let mut x: *mut f32 = t.as_flattened_mut().as_mut_ptr();
         let mut y: *mut f32 = grbuf.offset(k as isize);
-        x = t.as_flattened_mut().as_mut_ptr();
         i = 0 as i32;
         while i < 8 as i32 {
             let x0: f32 = *y.offset((i * 18 as i32) as isize);
@@ -2241,8 +2230,8 @@ pub unsafe fn mp3dec_decode_frame(
     if (*info).layer == 3 {
         let main_data_begin: i32 = L3_read_side_info(
             &mut bs_frame,
-            scratch_gr_info.as_mut_ptr(),
-            hdr.as_ptr(),
+            &mut scratch_gr_info,
+            hdr,
         );
         if main_data_begin < 0 as i32
             || bs_frame.pos > bs_frame.limit
