@@ -2170,8 +2170,8 @@ fn mp3d_find_frame(
     mp3_bytes
 }
 
-pub const fn mp3dec_init(dec: &mut mp3dec_t) {
-    (*dec).header[0 as i32 as usize] = 0 as i32 as u8;
+fn mp3dec_init(dec: &mut mp3dec_t) {
+    dec.header[0] = 0;
 }
 
 pub unsafe fn mp3dec_decode_frame(
