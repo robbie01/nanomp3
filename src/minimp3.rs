@@ -1369,7 +1369,8 @@ unsafe fn L3_imdct_gr(
         );
     };
 }
-unsafe fn L3_save_reservoir(
+
+fn L3_save_reservoir(
     h: &mut mp3dec_t,
     s: &mut mp3dec_scratch_t,
 ) {
@@ -1387,6 +1388,7 @@ unsafe fn L3_save_reservoir(
     }
     (*h).reserv = remains;
 }
+
 unsafe fn L3_restore_reservoir(
     h: &mut mp3dec_t,
     bs: &mut bs_t,
