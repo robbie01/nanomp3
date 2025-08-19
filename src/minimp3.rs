@@ -403,7 +403,7 @@ fn L3_ldexp_q2(
     return y;
 }
 unsafe fn L3_decode_scalefactors(
-    hdr: *const u8,
+    hdr: &[u8],
     ist_pos: *mut u8,
     bs: &mut bs_t,
     gr: &L3_gr_info_t,
@@ -421,7 +421,7 @@ unsafe fn L3_decode_scalefactors(
     let mut gain_exp: i32 = 0;
     let mut scfsi: i32 = (*gr).scfsi as i32;
     let mut gain: f32 = 0.;
-    if *hdr.offset(1 as i32 as isize) as i32 & 0x8 as i32 != 0 {
+    if hdr[1] & 0x8 != 0 {
         let part: i32 = L3_DECODE_SCALEFACTORS_G_SCFC_DECODE[(*gr).scalefac_compress as usize]
             as i32;
         scf_size[0 as i32 as usize] = (part >> 2 as i32) as u8;
@@ -432,8 +432,7 @@ unsafe fn L3_decode_scalefactors(
         let mut k: i32 = 0;
         let mut modprod: i32 = 0;
         let mut sfc: i32 = 0;
-        let ist: i32 = (*hdr.offset(3 as i32 as isize) as i32
-            & 0x10 as i32 != 0 && ch != 0) as i32;
+        let ist: i32 = (hdr[3] & 0x10 != 0 && ch != 0) as i32;
         sfc = (*gr).scalefac_compress as i32 >> ist;
         k = ist * 3 as i32 * 4 as i32;
         while sfc >= 0 as i32 {
@@ -492,9 +491,7 @@ unsafe fn L3_decode_scalefactors(
     }
     gain_exp = (*gr).global_gain as i32 + -(1 as i32) * 4 as i32
         - 210 as i32
-        - (if *hdr.offset(3 as i32 as isize) as i32 & 0xe0 as i32
-            == 0x60 as i32
-        {
+        - (if hdr[3] & 0xe0 == 0x60 {
             2 as i32
         } else {
             0 as i32
@@ -898,18 +895,16 @@ unsafe fn L3_stereo_process(
     mut left: &mut [f32],
     ist_pos: *const u8,
     sfb: *const u8,
-    hdr: *const u8,
+    hdr: &[u8],
     max_band: *mut i32,
     mpeg2_sh: i32,
 ) {
     let mut i: u32 = 0;
-    let max_pos: u32 = (if *hdr.offset(1 as i32 as isize)
-        as i32 & 0x8 as i32 != 0
-    {
-        7 as i32
+    let max_pos: u32 = if hdr[1] & 0x8 != 0 {
+        7
     } else {
-        64 as i32
-    }) as u32;
+        64
+    };
     i = 0 as i32 as u32;
     while *sfb.offset(i as isize) != 0 {
         let ipos: u32 = *ist_pos.offset(i as isize) as u32;
@@ -919,16 +914,12 @@ unsafe fn L3_stereo_process(
         {
             let mut kl: f32 = 0.;
             let mut kr: f32 = 0.;
-            let s: f32 = if *hdr.offset(3 as i32 as isize)
-                as i32 & 0x20 as i32 != 0
-            {
+            let s: f32 = if hdr[3] & 0x20 != 0 {
                 1.41421356f32
             } else {
-                1 as i32 as f32
+                1f32
             };
-            if *hdr.offset(1 as i32 as isize) as i32 & 0x8 as i32
-                != 0
-            {
+            if hdr[1] & 0x8 != 0 {
                 kl = L3_STEREO_PROCESS_G_PAN[(2 as i32 as u32).wrapping_mul(ipos)
                     as usize];
                 kr = L3_STEREO_PROCESS_G_PAN[(2 as i32 as u32)
@@ -952,9 +943,7 @@ unsafe fn L3_stereo_process(
                 kl * s,
                 kr * s,
             );
-        } else if *hdr.offset(3 as i32 as isize) as i32
-            & 0x20 as i32 != 0
-        {
+        } else if hdr[3] & 0x20 != 0 {
             L3_midside_stereo(left, *sfb.offset(i as isize) as usize);
         }
         left = &mut left[*sfb.offset(i as isize) as usize..];
@@ -965,7 +954,7 @@ unsafe fn L3_intensity_stereo(
     left: &mut [f32],
     ist_pos: *mut u8,
     gr: &[L3_gr_info_t],
-    hdr: *const u8,
+    hdr: &[u8],
 ) {
     let mut max_band: [i32; 3] = [0; 3];
     let n_sfb: i32 = gr[0].n_long_sfb as i32
@@ -1005,12 +994,10 @@ unsafe fn L3_intensity_stereo(
     }
     i = 0 as i32;
     while i < max_blocks {
-        let default_pos: i32 = if *hdr.offset(1 as i32 as isize)
-            as i32 & 0x8 as i32 != 0
-        {
-            3 as i32
+        let default_pos: i32 = if hdr[1] & 0x8 != 0 {
+            3
         } else {
-            0 as i32
+            0
         };
         let itop: i32 = n_sfb - max_blocks + i;
         let prev: i32 = itop - max_blocks;
@@ -1090,6 +1077,7 @@ fn L3_antialias(
         grbuf = &mut grbuf[18..];
     }
 }
+
 fn L3_dct3_9(y: &mut [f32]) {
     let mut s0: f32 = 0.;
     let mut s1: f32 = 0.;
@@ -1140,6 +1128,7 @@ fn L3_dct3_9(y: &mut [f32]) {
     y[7] = s2 - s1;
     y[8] = s4 + s7;
 }
+
 unsafe fn L3_imdct36(
     mut grbuf: *mut f32,
     mut overlap: *mut f32,
@@ -1420,7 +1409,7 @@ unsafe fn L3_decode(
         let layer3gr_limit: i32 = s_bs.pos
             + gr_info[ch as usize].part_23_length as i32;
         L3_decode_scalefactors(
-            ((*h).header).as_mut_ptr(),
+            &(*h).header,
             ((*s).ist_pos[ch as usize]).as_mut_ptr(),
             s_bs,
             &gr_info[ch as usize],
@@ -1441,7 +1430,7 @@ unsafe fn L3_decode(
             (*s).grbuf.as_flattened_mut(),
             ((*s).ist_pos[1 as i32 as usize]).as_mut_ptr(),
             gr_info,
-            ((*h).header).as_mut_ptr(),
+            &(*h).header,
         );
     } else if (*h).header[3 as i32 as usize] as i32 & 0xe0 as i32
         == 0x60 as i32
