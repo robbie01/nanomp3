@@ -56,12 +56,12 @@ impl Decoder {
 
         let mut info = minimp3::mp3dec_frame_info_t::default();
 
-        let samples = unsafe { minimp3::mp3dec_decode_frame(
+        let samples = minimp3::mp3dec_decode_frame(
             &mut self.0,
             mp3,
             pcm,
             &mut info
-        ) };
+        );
 
         (
             info.frame_bytes.try_into().unwrap(),

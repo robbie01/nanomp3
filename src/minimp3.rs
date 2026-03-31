@@ -10,10 +10,7 @@ use core::iter;
 
 use tables::*;
 
-#[inline(always)]
-unsafe fn memcpy(dst: *mut (), src: *const (), count: usize) {
-    core::ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, count);
-}
+
 
 #[derive(Copy, Clone, Default)]
 #[repr(C)]
@@ -326,60 +323,72 @@ fn L3_read_side_info(
     }
     return main_data_begin;
 }
-unsafe fn L3_read_scalefactors(
-    mut scf: *mut u8,
-    mut ist_pos: *mut u8,
-    scf_size: *const u8,
-    scf_count: *const u8,
+
+fn L3_read_scalefactors(
+    scf: &mut [u8],
+    ist_pos: &mut [u8],
+    scf_size: &[u8],
+    scf_count: &[u8],
     bitbuf: &mut bs_t,
     mut scfsi: i32,
 ) {
-    let mut i: i32 = 0;
-    let mut k: i32 = 0;
-    i = 0 as i32;
-    while i < 4 as i32 && *scf_count.offset(i as isize) as i32 != 0 {
-        let cnt: i32 = *scf_count.offset(i as isize) as i32;
-        if scfsi & 8 as i32 != 0 {
-            memcpy(
-                scf as *mut (),
-                ist_pos as *const (),
-                cnt as usize,
-            );
+    let mut scf_idx = 0usize;
+    let mut ist_idx = 0usize;
+
+    for i in 0..4 {
+        if i >= scf_count.len() || scf_count[i] == 0 {
+            break;
+        }
+
+        let cnt = scf_count[i] as usize;
+
+        // Ensure we don't go out of bounds
+        let scf_slice = &mut scf[scf_idx..scf_idx + cnt];
+        let ist_slice = &mut ist_pos[ist_idx..ist_idx + cnt];
+
+        if scfsi & 8 != 0 {
+            // memcpy(scf, ist_pos)
+            scf_slice.copy_from_slice(ist_slice);
         } else {
-            let bits: i32 = *scf_size.offset(i as isize) as i32;
+            let bits = scf_size[i] as i32;
+
             if bits == 0 {
-                core::ptr::write_bytes(scf, 0, cnt as usize);
-                core::ptr::write_bytes(ist_pos, 0, cnt as usize);
+                scf_slice.fill(0);
+                ist_slice.fill(0);
             } else {
-                let max_scf: i32 = if scfsi < 0 as i32 {
-                    ((1 as i32) << bits) - 1 as i32
+                let max_scf = if scfsi < 0 {
+                    (1 << bits) - 1
                 } else {
-                    -(1 as i32)
+                    -1
                 };
-                k = 0 as i32;
-                while k < cnt {
-                    let s: i32 = get_bits(bitbuf, bits) as i32;
-                    *ist_pos
-                        .offset(
-                            k as isize,
-                        ) = (if s == max_scf { -(1 as i32) } else { s })
-                        as u8;
-                    *scf.offset(k as isize) = s as u8;
-                    k += 1;
+
+                for k in 0..cnt {
+                    let s = get_bits(bitbuf, bits) as i32;
+
+                    ist_slice[k] = if s == max_scf {
+                        (-1i32) as u8
+                    } else {
+                        s as u8
+                    };
+
+                    scf_slice[k] = s as u8;
                 }
             }
         }
-        ist_pos = ist_pos.offset(cnt as isize);
-        scf = scf.offset(cnt as isize);
-        i += 1;
-        scfsi *= 2 as i32;
+
+        scf_idx += cnt;
+        ist_idx += cnt;
+        scfsi *= 2;
     }
-    let ref mut fresh2 = *scf.offset(2 as i32 as isize);
-    *fresh2 = 0 as i32 as u8;
-    let ref mut fresh3 = *scf.offset(1 as i32 as isize);
-    *fresh3 = *fresh2;
-    *scf.offset(0 as i32 as isize) = *fresh3;
+
+    // Final 3 zero values (matches original tail writes)
+    if scf.len() >= 3 {
+        scf[0] = 0;
+        scf[1] = 0;
+        scf[2] = 0;
+    }
 }
+
 fn L3_ldexp_q2(
     mut y: f32,
     mut exp_q2: i32,
@@ -402,115 +411,98 @@ fn L3_ldexp_q2(
     }
     return y;
 }
-unsafe fn L3_decode_scalefactors(
+
+fn L3_decode_scalefactors(
     hdr: &[u8],
-    ist_pos: *mut u8,
+    ist_pos: &mut [u8],
     bs: &mut bs_t,
     gr: &L3_gr_info_t,
-    scf: *mut f32,
+    scf: &mut [f32],
     ch: u32,
 ) {
-    let mut scf_partition: *const u8 = (L3_DECODE_SCALEFACTORS_G_SCM_PARTITIONS[(((*gr).n_short_sfb != 0)
-        as i32 + ((*gr).n_long_sfb == 0) as i32) as usize])
-        .as_ptr();
-    let mut scf_size: [u8; 4] = [0; 4];
-    let mut iscf: [u8; 40] = [0; 40];
-    let mut i: i32 = 0;
-    let scf_shift: i32 = (*gr).scalefac_scale as i32
-        + 1 as i32;
-    let mut gain_exp: i32 = 0;
-    let mut scfsi: i32 = (*gr).scfsi as i32;
-    let mut gain: f32 = 0.;
+    let mut scf_partition: &[u8] = &L3_DECODE_SCALEFACTORS_G_SCM_PARTITIONS
+        [(gr.n_short_sfb != 0) as usize + (gr.n_long_sfb == 0) as usize];
+
+    let mut scf_size = [0u8; 4];
+    let mut iscf = [0u8; 40];
+
+    let scf_shift = gr.scalefac_scale as i32 + 1;
+    let mut scfsi = gr.scfsi as i32;
+
+    // --- decode scalefactor sizes ---
     if hdr[1] & 0x8 != 0 {
-        let part: i32 = L3_DECODE_SCALEFACTORS_G_SCFC_DECODE[(*gr).scalefac_compress as usize]
-            as i32;
-        scf_size[0 as i32 as usize] = (part >> 2 as i32) as u8;
-        scf_size[1 as i32 as usize] = scf_size[0 as i32 as usize];
-        scf_size[2 as i32 as usize] = (part & 3 as i32) as u8;
-        scf_size[3 as i32 as usize] = scf_size[2 as i32 as usize];
+        let part = L3_DECODE_SCALEFACTORS_G_SCFC_DECODE[gr.scalefac_compress as usize] as i32;
+        scf_size[0] = (part >> 2) as u8;
+        scf_size[1] = scf_size[0];
+        scf_size[2] = (part & 3) as u8;
+        scf_size[3] = scf_size[2];
     } else {
-        let mut k: i32 = 0;
-        let mut modprod: i32 = 0;
-        let mut sfc: i32 = 0;
-        let ist: i32 = (hdr[3] & 0x10 != 0 && ch != 0) as i32;
-        sfc = (*gr).scalefac_compress as i32 >> ist;
-        k = ist * 3 as i32 * 4 as i32;
-        while sfc >= 0 as i32 {
-            modprod = 1 as i32;
-            i = 3 as i32;
-            while i >= 0 as i32 {
-                scf_size[i
-                    as usize] = (sfc / modprod % L3_DECODE_SCALEFACTORS_G_MOD[(k + i) as usize] as i32)
-                    as u8;
-                modprod *= L3_DECODE_SCALEFACTORS_G_MOD[(k + i) as usize] as i32;
-                i -= 1;
+        let ist = ((hdr[3] & 0x10 != 0) && ch != 0) as i32;
+        let mut sfc = (gr.scalefac_compress as i32) >> ist;
+        let mut k = ist * 3 * 4;
+
+        while sfc >= 0 {
+            let mut modprod = 1;
+            for i in (0..4).rev() {
+                let m = L3_DECODE_SCALEFACTORS_G_MOD[(k + i) as usize] as i32;
+                scf_size[i as usize] = ((sfc / modprod) % m) as u8;
+                modprod *= m;
             }
             sfc -= modprod;
-            k += 4 as i32;
+            k += 4;
         }
-        scf_partition = scf_partition.offset(k as isize);
-        scfsi = -(16 as i32);
+
+        scf_partition = &scf_partition[k as usize..];
+        scfsi = -16;
     }
+
+    // --- read scalefactors ---
     L3_read_scalefactors(
-        iscf.as_mut_ptr(),
+        &mut iscf,
         ist_pos,
-        scf_size.as_mut_ptr(),
+        &mut scf_size,
         scf_partition,
         bs,
         scfsi,
     );
-    if (*gr).n_short_sfb != 0 {
-        let sh: i32 = 3 as i32 - scf_shift;
-        i = 0 as i32;
-        while i < (*gr).n_short_sfb as i32 {
-            iscf[((*gr).n_long_sfb as i32 + i + 0 as i32)
-                as usize] = (iscf[((*gr).n_long_sfb as i32 + i
-                + 0 as i32) as usize] as i32
-                + (((*gr).subblock_gain[0 as i32 as usize] as i32)
-                    << sh)) as u8;
-            iscf[((*gr).n_long_sfb as i32 + i + 1 as i32)
-                as usize] = (iscf[((*gr).n_long_sfb as i32 + i
-                + 1 as i32) as usize] as i32
-                + (((*gr).subblock_gain[1 as i32 as usize] as i32)
-                    << sh)) as u8;
-            iscf[((*gr).n_long_sfb as i32 + i + 2 as i32)
-                as usize] = (iscf[((*gr).n_long_sfb as i32 + i
-                + 2 as i32) as usize] as i32
-                + (((*gr).subblock_gain[2 as i32 as usize] as i32)
-                    << sh)) as u8;
-            i += 3 as i32;
+
+    // --- apply short block gain ---
+    if gr.n_short_sfb != 0 {
+        let sh = 3 - scf_shift;
+        let base = gr.n_long_sfb as usize;
+
+        for i in (0..gr.n_short_sfb as usize).step_by(3) {
+            iscf[base + i + 0] =
+                (iscf[base + i + 0] as i32 + ((gr.subblock_gain[0] as i32) << sh)) as u8;
+            iscf[base + i + 1] =
+                (iscf[base + i + 1] as i32 + ((gr.subblock_gain[1] as i32) << sh)) as u8;
+            iscf[base + i + 2] =
+                (iscf[base + i + 2] as i32 + ((gr.subblock_gain[2] as i32) << sh)) as u8;
         }
-    } else if (*gr).preflag != 0 {
-        i = 0 as i32;
-        while i < 10 as i32 {
-            iscf[(11 as i32 + i)
-                as usize] = (iscf[(11 as i32 + i) as usize] as i32
-                + L3_DECODE_SCALEFACTORS_G_PREAMP[i as usize] as i32) as u8;
-            i += 1;
+    } else if gr.preflag != 0 {
+        for i in 0..10 {
+            iscf[11 + i] =
+                (iscf[11 + i] as i32 + L3_DECODE_SCALEFACTORS_G_PREAMP[i] as i32) as u8;
         }
     }
-    gain_exp = (*gr).global_gain as i32 + -(1 as i32) * 4 as i32
-        - 210 as i32
-        - (if hdr[3] & 0xe0 == 0x60 {
-            2 as i32
-        } else {
-            0 as i32
-        });
-    gain = L3_ldexp_q2(
-        ((1 as i32)
-            << (255 as i32 + -(1 as i32) * 4 as i32
-                - 210 as i32 + 3 as i32 & !(3 as i32))
-                / 4 as i32) as f32,
-        (255 as i32 + -(1 as i32) * 4 as i32 - 210 as i32
-            + 3 as i32 & !(3 as i32)) - gain_exp,
+
+    // --- compute gain ---
+    let gain_exp = gr.global_gain as i32
+        - 4
+        - 210
+        - if hdr[3] & 0xe0 == 0x60 { 2 } else { 0 };
+
+    let base = (255 - 4 - 210 + 3) & !3;
+
+    let gain = L3_ldexp_q2(
+        (1 << (base / 4)) as f32,
+        base - gain_exp,
     );
-    i = 0 as i32;
-    while i < (*gr).n_long_sfb as i32 + (*gr).n_short_sfb as i32 {
-        *scf
-            .offset(
-                i as isize,
-            ) = L3_ldexp_q2(gain, (iscf[i as usize] as i32) << scf_shift);
-        i += 1;
+
+    // --- apply scalefactors ---
+    let total = (gr.n_long_sfb + gr.n_short_sfb) as usize;
+    for i in 0..total {
+        scf[i] = L3_ldexp_q2(gain, (iscf[i] as i32) << scf_shift);
     }
 }
 
@@ -535,303 +527,333 @@ fn L3_pow_43(mut x: i32) -> f32 {
                     + frac * (2.0f32 / 9 as i32 as f32)))
         * mult as f32;
 }
-unsafe fn L3_huffman(
-    mut dst: *mut f32,
-    bs: &mut bs_t,
-    gr_info: &L3_gr_info_t,
-    mut scf: *const f32,
-    layer3gr_limit: i32,
+
+fn L3_stereo_top_band(
+    mut right: &[f32],
+    sfb: &[u8],
+    nbands: i32,
+    max_band: &mut [i32; 3],
 ) {
-    let mut one: f32 = 0.0f32;
-    let mut ireg: i32 = 0 as i32;
-    let mut big_val_cnt: i32 = (*gr_info).big_values as i32;
-    let mut sfb: *const u8 = (*gr_info).sfbtab;
-    let mut bs_next_ptr = &bs.buf[(bs.pos / 8 as i32) as usize..];
-    let mut bs_cache: u32 = (bs_next_ptr[0] as u32)
-        .wrapping_mul(256 as u32)
-        .wrapping_add(bs_next_ptr[1] as u32)
-        .wrapping_mul(256 as u32)
-        .wrapping_add(bs_next_ptr[2] as u32)
-        .wrapping_mul(256 as u32)
-        .wrapping_add(bs_next_ptr[3] as u32)
-        << (bs.pos & 7 as i32);
-    let mut pairs_to_decode: i32 = 0;
-    let mut np: i32 = 0;
-    let mut bs_sh: i32 = (bs.pos & 7 as i32) - 8 as i32;
-    bs_next_ptr = &bs_next_ptr[4..];
-    while big_val_cnt > 0 as i32 {
-        let tab_num: i32 = (*gr_info).table_select[ireg as usize]
-            as i32;
-        let fresh4 = ireg;
-        ireg = ireg + 1;
-        let mut sfb_cnt: i32 = (*gr_info).region_count[fresh4 as usize]
-            as i32;
-        let codebook: *const i16 = L3_HUFFMAN_TABS
-            .as_ptr()
-            .offset(L3_HUFFMAN_TABINDEX[tab_num as usize] as i32 as isize);
-        let linbits: i32 = L3_HUFFMAN_G_LINBITS[tab_num as usize] as i32;
-        if linbits != 0 {
-            loop {
-                let fresh5 = sfb;
-                sfb = sfb.offset(1);
-                np = *fresh5 as i32 / 2 as i32;
-                pairs_to_decode = if big_val_cnt > np { np } else { big_val_cnt };
-                let fresh6 = scf;
-                scf = scf.offset(1);
-                one = *fresh6;
-                loop {
-                    let mut j: i32 = 0;
-                    let mut w: i32 = 5 as i32;
-                    let mut leaf: i32 = *codebook
-                        .offset((bs_cache >> 32 as i32 - w) as isize)
-                        as i32;
-                    while leaf < 0 as i32 {
-                        bs_cache <<= w;
-                        bs_sh += w;
-                        w = leaf & 7 as i32;
-                        leaf = *codebook
-                            .offset(
-                                (bs_cache >> 32 as i32 - w)
-                                    .wrapping_sub((leaf >> 3 as i32) as u32)
-                                    as isize,
-                            ) as i32;
-                    }
-                    bs_cache <<= leaf >> 8 as i32;
-                    bs_sh += leaf >> 8 as i32;
-                    j = 0 as i32;
-                    while j < 2 as i32 {
-                        let mut lsb: i32 = leaf & 0xf as i32;
-                        if lsb == 15 as i32 {
-                            lsb = (lsb as u32)
-                                .wrapping_add(bs_cache >> 32 as i32 - linbits)
-                                as i32 as i32;
-                            bs_cache <<= linbits;
-                            bs_sh += linbits;
-                            while bs_sh >= 0 as i32 {
-                                let fresh7 = bs_next_ptr;
-                                bs_next_ptr = &bs_next_ptr[1..];
-                                bs_cache |= (fresh7[0] as u32) << bs_sh;
-                                bs_sh -= 8 as i32;
-                            }
-                            *dst = one * L3_pow_43(lsb)
-                                * (if (bs_cache as i32) < 0 as i32 {
-                                    -(1 as i32)
-                                } else {
-                                    1 as i32
-                                }) as f32;
-                        } else {
-                            *dst = G_POW43[((16 as i32 + lsb) as u32)
-                                .wrapping_sub(
-                                    16 as i32 as u32
-                                        * (bs_cache >> 31 as i32),
-                                ) as usize] * one;
-                        }
-                        bs_cache
-                            <<= if lsb != 0 {
-                                1 as i32
-                            } else {
-                                0 as i32
-                            };
-                        bs_sh
-                            += if lsb != 0 {
-                                1 as i32
-                            } else {
-                                0 as i32
-                            };
-                        j += 1;
-                        dst = dst.offset(1);
-                        leaf >>= 4 as i32;
-                    }
-                    while bs_sh >= 0 as i32 {
-                        let fresh8 = bs_next_ptr;
-                        bs_next_ptr = &bs_next_ptr[1..];
-                        bs_cache |= (fresh8[0] as u32) << bs_sh;
-                        bs_sh -= 8 as i32;
-                    }
-                    pairs_to_decode -= 1;
-                    if !(pairs_to_decode != 0) {
-                        break;
-                    }
-                }
-                big_val_cnt -= np;
-                if !(big_val_cnt > 0 as i32
-                    && {
-                        sfb_cnt -= 1;
-                        sfb_cnt >= 0 as i32
-                    })
-                {
-                    break;
-                }
-            }
-        } else {
-            loop {
-                let fresh9 = sfb;
-                sfb = sfb.offset(1);
-                np = *fresh9 as i32 / 2 as i32;
-                pairs_to_decode = if big_val_cnt > np { np } else { big_val_cnt };
-                let fresh10 = scf;
-                scf = scf.offset(1);
-                one = *fresh10;
-                loop {
-                    let mut j_0: i32 = 0;
-                    let mut w_0: i32 = 5 as i32;
-                    let mut leaf_0: i32 = *codebook
-                        .offset((bs_cache >> 32 as i32 - w_0) as isize)
-                        as i32;
-                    while leaf_0 < 0 as i32 {
-                        bs_cache <<= w_0;
-                        bs_sh += w_0;
-                        w_0 = leaf_0 & 7 as i32;
-                        leaf_0 = *codebook
-                            .offset(
-                                (bs_cache >> 32 as i32 - w_0)
-                                    .wrapping_sub((leaf_0 >> 3 as i32) as u32)
-                                    as isize,
-                            ) as i32;
-                    }
-                    bs_cache <<= leaf_0 >> 8 as i32;
-                    bs_sh += leaf_0 >> 8 as i32;
-                    j_0 = 0 as i32;
-                    while j_0 < 2 as i32 {
-                        let lsb_0: i32 = leaf_0 & 0xf as i32;
-                        *dst = G_POW43[((16 as i32 + lsb_0) as u32)
-                            .wrapping_sub(
-                                16 as i32 as u32
-                                    * (bs_cache >> 31 as i32),
-                            ) as usize] * one;
-                        bs_cache
-                            <<= if lsb_0 != 0 {
-                                1 as i32
-                            } else {
-                                0 as i32
-                            };
-                        bs_sh
-                            += if lsb_0 != 0 {
-                                1 as i32
-                            } else {
-                                0 as i32
-                            };
-                        j_0 += 1;
-                        dst = dst.offset(1);
-                        leaf_0 >>= 4 as i32;
-                    }
-                    while bs_sh >= 0 as i32 {
-                        let fresh11 = bs_next_ptr;
-                        bs_next_ptr = &bs_next_ptr[1..];
-                        bs_cache |= (fresh11[0] as u32) << bs_sh;
-                        bs_sh -= 8 as i32;
-                    }
-                    pairs_to_decode -= 1;
-                    if !(pairs_to_decode != 0) {
-                        break;
-                    }
-                }
-                big_val_cnt -= np;
-                if !(big_val_cnt > 0 as i32
-                    && {
-                        sfb_cnt -= 1;
-                        sfb_cnt >= 0 as i32
-                    })
-                {
-                    break;
-                }
-            }
-        }
-    }
-    np = 1 as i32 - big_val_cnt;
-    loop {
-        let codebook_count1: *const u8 = if (*gr_info).count1_table
-            as i32 != 0
-        {
-            L3_HUFFMAN_TAB33.as_ptr()
-        } else {
-            L3_HUFFMAN_TAB32.as_ptr()
-        };
-        let mut leaf_1: i32 = *codebook_count1
-            .offset((bs_cache >> 32 as i32 - 4 as i32) as isize)
-            as i32;
-        if leaf_1 & 8 as i32 == 0 {
-            leaf_1 = *codebook_count1
-                .offset(
-                    ((leaf_1 >> 3 as i32) as u32)
-                        .wrapping_add(
-                            bs_cache << 4 as i32
-                                >> 32 as i32 - (leaf_1 & 3 as i32),
-                        ) as isize,
-                ) as i32;
-        }
-        bs_cache <<= leaf_1 & 7 as i32;
-        bs_sh += leaf_1 & 7 as i32;
-        if (bs_next_ptr.as_ptr() as usize - bs.buf.as_ptr() as usize) as isize
-            * 8 as i32 as isize - 24 as i32 as isize
-            + bs_sh as isize > layer3gr_limit as isize
-        {
+    // initialize
+    max_band.fill(-1);
+
+    for i in 0..(nbands as usize) {
+        if i >= sfb.len() {
             break;
         }
-        np -= 1;
-        if np == 0 {
-            let fresh12 = sfb;
-            sfb = sfb.offset(1);
-            np = *fresh12 as i32 / 2 as i32;
-            if np == 0 {
+
+        let band_len = sfb[i] as usize;
+
+        let mut k = 0;
+        while k + 1 < band_len && k + 1 < right.len() {
+            if right[k] != 0.0 || right[k + 1] != 0.0 {
+                max_band[i % 3] = i as i32;
                 break;
             }
-            let fresh13 = scf;
-            scf = scf.offset(1);
-            one = *fresh13;
+            k += 2;
         }
-        if leaf_1 & 128 as i32 >> 0 as i32 != 0 {
-            *dst
-                .offset(
-                    0 as i32 as isize,
-                ) = if (bs_cache as i32) < 0 as i32 { -one } else { one };
-            bs_cache <<= 1 as i32;
-            bs_sh += 1 as i32;
+
+        if band_len > right.len() {
+            break;
         }
-        if leaf_1 & 128 as i32 >> 1 as i32 != 0 {
-            *dst
-                .offset(
-                    1 as i32 as isize,
-                ) = if (bs_cache as i32) < 0 as i32 { -one } else { one };
-            bs_cache <<= 1 as i32;
-            bs_sh += 1 as i32;
-        }
-        np -= 1;
-        if np == 0 {
-            let fresh14 = sfb;
-            sfb = sfb.offset(1);
-            np = *fresh14 as i32 / 2 as i32;
-            if np == 0 {
-                break;
-            }
-            let fresh15 = scf;
-            scf = scf.offset(1);
-            one = *fresh15;
-        }
-        if leaf_1 & 128 as i32 >> 2 as i32 != 0 {
-            *dst
-                .offset(
-                    2 as i32 as isize,
-                ) = if (bs_cache as i32) < 0 as i32 { -one } else { one };
-            bs_cache <<= 1 as i32;
-            bs_sh += 1 as i32;
-        }
-        if leaf_1 & 128 as i32 >> 3 as i32 != 0 {
-            *dst
-                .offset(
-                    3 as i32 as isize,
-                ) = if (bs_cache as i32) < 0 as i32 { -one } else { one };
-            bs_cache <<= 1 as i32;
-            bs_sh += 1 as i32;
-        }
-        while bs_sh >= 0 as i32 {
-            let fresh16 = bs_next_ptr;
-            bs_next_ptr = &bs_next_ptr[1..];
-            bs_cache |= (fresh16[0] as u32) << bs_sh;
-            bs_sh -= 8 as i32;
-        }
-        dst = dst.offset(4 as i32 as isize);
+
+        right = &right[band_len..];
     }
+}
+
+fn L3_intensity_stereo(
+    left: &mut [f32],
+    ist_pos: &mut [u8],
+    gr: &[L3_gr_info_t],
+    hdr: &[u8],
+) {
+    let mut max_band = [-1i32; 3];
+
+    let n_sfb = (gr[0].n_long_sfb + gr[0].n_short_sfb) as usize;
+    let max_blocks = if gr[0].n_short_sfb != 0 { 3 } else { 1 };
+
+    let sfb = unsafe {
+        // still needed unless you change sfbtab type
+        core::slice::from_raw_parts(gr[0].sfbtab, n_sfb)
+    };
+
+    // right channel is second half (must exist)
+    if left.len() < 576 {
+        return;
+    }
+
+    let right = &left[576..];
+
+    L3_stereo_top_band(
+        right,
+        sfb,
+        n_sfb as i32,
+        &mut max_band,
+    );
+
+    // normalize max_band if long blocks present
+    if gr[0].n_long_sfb != 0 {
+        let m = max_band[0].max(max_band[1]).max(max_band[2]);
+        max_band = [m, m, m];
+    }
+
+    for i in 0..max_blocks {
+        let default_pos = if hdr[1] & 0x8 != 0 { 3 } else { 0 };
+
+        let itop = n_sfb as i32 - max_blocks + i as i32;
+        let prev = itop - max_blocks;
+
+        let new_val = if (i < max_band.len().try_into().unwrap()) && max_band[<i32 as TryInto<usize>>::try_into(i).unwrap()] >= prev {
+            default_pos
+        } else {
+            ist_pos.get(prev as usize).copied().unwrap_or(0) as i32
+        };
+
+        if let Some(slot) = ist_pos.get_mut(itop as usize) {
+            *slot = new_val as u8;
+        }
+    }
+
+    L3_stereo_process(
+        left,
+        ist_pos,
+        sfb,
+        hdr,
+        &max_band,
+        gr[1].scalefac_compress as i32 & 1,
+    );
+}
+
+fn L3_stereo_process(
+    mut left: &mut [f32],
+    ist_pos: &[u8],
+    sfb: &[u8],
+    hdr: &[u8],
+    max_band: &[i32; 3],
+    mpeg2_sh: i32,
+) {
+    let max_pos = if hdr[1] & 0x8 != 0 { 7 } else { 64 };
+
+    let mut i = 0usize;
+
+    while i < sfb.len() && sfb[i] != 0 {
+        let band_len = sfb[i] as usize;
+        let ipos = ist_pos.get(i).copied().unwrap_or(0) as u32;
+
+        if i as i32 > max_band[i % 3] && ipos < max_pos {
+            let s = if hdr[3] & 0x20 != 0 {
+                1.41421356f32
+            } else {
+                1.0
+            };
+
+            let (mut kl, mut kr);
+
+            if hdr[1] & 0x8 != 0 {
+                let idx = (2 * ipos) as usize;
+                kl = L3_STEREO_PROCESS_G_PAN.get(idx).copied().unwrap_or(0.0);
+                kr = L3_STEREO_PROCESS_G_PAN.get(idx + 1).copied().unwrap_or(0.0);
+            } else {
+                kl = 1.0;
+                kr = L3_ldexp_q2(
+                    1.0,
+                    (((ipos + 1) >> 1) << mpeg2_sh) as i32,
+                );
+
+                if ipos & 1 != 0 {
+                    kl = kr;
+                    kr = 1.0;
+                }
+            }
+
+            L3_intensity_stereo_band(
+                left,
+                band_len,
+                kl * s,
+                kr * s,
+            );
+        } else if hdr[3] & 0x20 != 0 {
+            L3_midside_stereo(left, band_len);
+        }
+
+        if band_len > left.len() {
+            break;
+        }
+
+        left = &mut left[band_len..];
+        i += 1;
+    }
+}
+
+#[derive(Copy, Clone)]
+struct BitReader<'a> {
+    buf: &'a [u8],
+    pos: usize, // bit position
+}
+
+impl<'a> BitReader<'a> {
+    fn new(buf: &'a [u8], pos: usize) -> Self {
+        Self { buf, pos }
+    }
+
+    fn read_bits(&mut self, n: u32) -> u32 {
+        let mut out = 0;
+
+        for _ in 0..n {
+            let byte = self.pos / 8;
+            let bit = 7 - (self.pos % 8);
+
+            let val = if byte < self.buf.len() {
+                (self.buf[byte] >> bit) & 1
+            } else {
+                0
+            };
+
+            out = (out << 1) | val as u32;
+            self.pos += 1;
+        }
+
+        out
+    }
+
+    fn peek_bits(&self, n: u32) -> u32 {
+        let mut tmp = self.clone();
+        tmp.read_bits(n)
+    }
+}
+
+fn L3_huffman(
+    dst: &mut [f32],
+    bs: &mut bs_t,
+    gr_info: &L3_gr_info_t,
+    scf: &[f32],
+    layer3gr_limit: i32,
+) {
+    let mut br = BitReader::new(&bs.buf, bs.pos as usize);
+
+    let mut dst_idx = 0usize;
+    let mut big_val_cnt = gr_info.big_values as i32;
+
+    let sfb = unsafe {
+        core::slice::from_raw_parts(gr_info.sfbtab, 64)
+    };
+
+    let mut sfb_idx = 0usize;
+    let mut scf_idx = 0usize;
+
+    let mut ireg = 0usize;
+
+    // --- BIG VALUES ---
+    while big_val_cnt > 0 && ireg < 3 {
+        let tab_num = gr_info.table_select[ireg] as usize;
+        let mut sfb_cnt = gr_info.region_count[ireg] as i32;
+        ireg += 1;
+
+        let codebook =
+            &L3_HUFFMAN_TABS[L3_HUFFMAN_TABINDEX[tab_num] as usize..];
+
+        let linbits = L3_HUFFMAN_G_LINBITS[tab_num] as i32;
+
+        while big_val_cnt > 0 && sfb_cnt >= 0 {
+            if sfb_idx >= sfb.len() || scf_idx >= scf.len() {
+                break;
+            }
+
+            let np = (sfb[sfb_idx] as i32) / 2;
+            let pairs = big_val_cnt.min(np);
+
+            let one = scf[scf_idx];
+            scf_idx += 1;
+            sfb_idx += 1;
+
+            for _ in 0..pairs {
+                // simplified safe decode
+                let mut leaf = codebook
+                    .get(br.peek_bits(5) as usize)
+                    .copied()
+                    .unwrap_or(0) as i32;
+
+                let mut w = 5;
+
+                while leaf < 0 {
+                    br.read_bits(w as u32);
+                    w = leaf & 7;
+
+                    let idx =
+                        (br.peek_bits(w as u32) as i32 - (leaf >> 3)) as usize;
+
+                    leaf = *codebook.get(idx).unwrap_or(&0) as i32;
+                }
+
+                br.read_bits((leaf >> 8) as u32);
+
+                for _ in 0..2 {
+                    if dst_idx >= dst.len() {
+                        break;
+                    }
+
+                    let mut val = leaf & 0xF;
+
+                    if val == 15 {
+                        val += br.read_bits(linbits as u32) as i32;
+                        let sign = if br.read_bits(1) != 0 { -1.0 } else { 1.0 };
+                        dst[dst_idx] = one * L3_pow_43(val) * sign;
+                    } else {
+                        let sign = if br.read_bits(1) != 0 { -1.0 } else { 1.0 };
+                        dst[dst_idx] =
+                            G_POW43[val as usize] * one * sign;
+                    }
+
+                    dst_idx += 1;
+                    leaf >>= 4;
+                }
+            }
+
+            big_val_cnt -= np;
+            sfb_cnt -= 1;
+        }
+    }
+
+    // --- COUNT1 REGION ---
+    let table: &[u8] = if gr_info.count1_table != 0 {
+        &L3_HUFFMAN_TAB33
+    } else {
+        &L3_HUFFMAN_TAB32
+    };
+
+    let mut np = 1 - big_val_cnt;
+
+    while (br.pos as i32) < layer3gr_limit && dst_idx + 4 <= dst.len() {
+        let mut leaf = table
+            .get(br.peek_bits(4) as usize)
+            .copied()
+            .unwrap_or(0) as i32;
+
+        if leaf & 8 == 0 {
+            let idx =
+                ((leaf >> 3) + br.read_bits((leaf & 3) as u32) as i32) as usize;
+            leaf = *table.get(idx).unwrap_or(&0) as i32;
+        }
+
+        br.read_bits((leaf & 7) as u32);
+
+        for i in 0..4 {
+            if leaf & (8 >> i) != 0 {
+                let sign = if br.read_bits(1) != 0 { -1.0 } else { 1.0 };
+                dst[dst_idx + i] = sign;
+            } else {
+                dst[dst_idx + i] = 0.0;
+            }
+        }
+
+        dst_idx += 4;
+
+        np -= 1;
+        if np <= 0 {
+            break;
+        }
+    }
+
     bs.pos = layer3gr_limit;
 }
 
@@ -860,204 +882,56 @@ fn L3_intensity_stereo_band(
     }
 }
 
-unsafe fn L3_stereo_top_band(
-    mut right: &[f32],
-    sfb: *const u8,
-    nbands: i32,
-    max_band: *mut i32,
+
+
+fn L3_reorder(
+    grbuf: &mut [f32],
+    scratch: &mut [f32],
+    sfb: &[u8],
 ) {
-    let mut i: i32 = 0;
-    let mut k = 0usize;
-    let ref mut fresh17 = *max_band.offset(2 as i32 as isize);
-    *fresh17 = -(1 as i32);
-    let ref mut fresh18 = *max_band.offset(1 as i32 as isize);
-    *fresh18 = *fresh17;
-    *max_band.offset(0 as i32 as isize) = *fresh18;
-    i = 0 as i32;
-    while i < nbands {
-        k = 0;
-        while k < *sfb.offset(i as isize) as usize {
-            if right[k] != 0 as i32 as f32
-                || right[k + 1]
-                    != 0 as i32 as f32
-            {
-                *max_band.offset((i % 3 as i32) as isize) = i;
-                break;
-            } else {
-                k += 2;
-            }
-        }
-        right = &right[*sfb.offset(i as isize) as usize..];
-        i += 1;
-    }
-}
-unsafe fn L3_stereo_process(
-    mut left: &mut [f32],
-    ist_pos: *const u8,
-    sfb: *const u8,
-    hdr: &[u8],
-    max_band: *mut i32,
-    mpeg2_sh: i32,
-) {
-    let mut i: u32 = 0;
-    let max_pos: u32 = if hdr[1] & 0x8 != 0 {
-        7
-    } else {
-        64
-    };
-    i = 0 as i32 as u32;
-    while *sfb.offset(i as isize) != 0 {
-        let ipos: u32 = *ist_pos.offset(i as isize) as u32;
-        if i as i32
-            > *max_band.offset(i.wrapping_rem(3 as i32 as u32) as isize)
-            && ipos < max_pos
-        {
-            let mut kl: f32 = 0.;
-            let mut kr: f32 = 0.;
-            let s: f32 = if hdr[3] & 0x20 != 0 {
-                1.41421356f32
-            } else {
-                1f32
-            };
-            if hdr[1] & 0x8 != 0 {
-                kl = L3_STEREO_PROCESS_G_PAN[(2 as i32 as u32).wrapping_mul(ipos)
-                    as usize];
-                kr = L3_STEREO_PROCESS_G_PAN[(2 as i32 as u32)
-                    .wrapping_mul(ipos)
-                    .wrapping_add(1 as i32 as u32) as usize];
-            } else {
-                kl = 1 as i32 as f32;
-                kr = L3_ldexp_q2(
-                    1 as i32 as f32,
-                    ((ipos.wrapping_add(1 as i32 as u32)
-                        >> 1 as i32) << mpeg2_sh) as i32,
-                );
-                if ipos & 1 as i32 as u32 != 0 {
-                    kl = kr;
-                    kr = 1 as i32 as f32;
-                }
-            }
-            L3_intensity_stereo_band(
-                left,
-                *sfb.offset(i as isize) as usize,
-                kl * s,
-                kr * s,
-            );
-        } else if hdr[3] & 0x20 != 0 {
-            L3_midside_stereo(left, *sfb.offset(i as isize) as usize);
-        }
-        left = &mut left[*sfb.offset(i as isize) as usize..];
-        i = i.wrapping_add(1);
-    }
-}
-unsafe fn L3_intensity_stereo(
-    left: &mut [f32],
-    ist_pos: *mut u8,
-    gr: &[L3_gr_info_t],
-    hdr: &[u8],
-) {
-    let mut max_band: [i32; 3] = [0; 3];
-    let n_sfb: i32 = gr[0].n_long_sfb as i32
-        + gr[0].n_short_sfb as i32;
-    let mut i: i32 = 0;
-    let max_blocks: i32 = if gr[0].n_short_sfb as i32 != 0 {
-        3 as i32
-    } else {
-        1 as i32
-    };
-    L3_stereo_top_band(
-        &left[576..],
-        gr[0].sfbtab,
-        n_sfb,
-        max_band.as_mut_ptr(),
-    );
-    if gr[0].n_long_sfb != 0 {
-        max_band[2 as i32
-            as usize] = if (if max_band[0 as i32 as usize]
-            < max_band[1 as i32 as usize]
-        {
-            max_band[1 as i32 as usize]
-        } else {
-            max_band[0 as i32 as usize]
-        }) < max_band[2 as i32 as usize]
-        {
-            max_band[2 as i32 as usize]
-        } else if max_band[0 as i32 as usize]
-            < max_band[1 as i32 as usize]
-        {
-            max_band[1 as i32 as usize]
-        } else {
-            max_band[0 as i32 as usize]
-        };
-        max_band[1 as i32 as usize] = max_band[2 as i32 as usize];
-        max_band[0 as i32 as usize] = max_band[1 as i32 as usize];
-    }
-    i = 0 as i32;
-    while i < max_blocks {
-        let default_pos: i32 = if hdr[1] & 0x8 != 0 {
-            3
-        } else {
-            0
-        };
-        let itop: i32 = n_sfb - max_blocks + i;
-        let prev: i32 = itop - max_blocks;
-        *ist_pos
-            .offset(
-                itop as isize,
-            ) = (if max_band[i as usize] >= prev {
-            default_pos
-        } else {
-            *ist_pos.offset(prev as isize) as i32
-        }) as u8;
-        i += 1;
-    }
-    L3_stereo_process(
-        left,
-        ist_pos,
-        gr[0].sfbtab,
-        hdr,
-        max_band.as_mut_ptr(),
-        gr[1].scalefac_compress as i32
-            & 1 as i32,
-    );
-}
-unsafe fn L3_reorder(
-    grbuf: *mut f32,
-    scratch: *mut f32,
-    mut sfb: *const u8,
-) {
-    let mut i: i32 = 0;
-    let mut len: i32 = 0;
-    let mut src: *mut f32 = grbuf;
-    let mut dst: *mut f32 = scratch;
-    loop {
-        len = *sfb as i32;
-        if !(0 as i32 != len) {
+    let mut src_idx = 0usize;
+    let mut dst_idx = 0usize;
+    let mut sfb_idx = 0usize;
+
+    // process bands
+    while sfb_idx < sfb.len() {
+        let len = sfb[sfb_idx] as usize;
+        if len == 0 {
             break;
         }
-        i = 0 as i32;
-        while i < len {
-            let fresh19 = dst;
-            dst = dst.offset(1);
-            *fresh19 = *src.offset((0 as i32 * len) as isize);
-            let fresh20 = dst;
-            dst = dst.offset(1);
-            *fresh20 = *src.offset((1 as i32 * len) as isize);
-            let fresh21 = dst;
-            dst = dst.offset(1);
-            *fresh21 = *src.offset((2 as i32 * len) as isize);
-            i += 1;
-            src = src.offset(1);
+
+        // ensure we have enough sfb entries for next step
+        if sfb_idx + 3 > sfb.len() {
+            break;
         }
-        sfb = sfb.offset(3 as i32 as isize);
-        src = src.offset((2 as i32 * len) as isize);
+
+        for i in 0..len {
+            let base = src_idx + i;
+
+            let get = |idx: usize| -> f32 {
+                grbuf.get(idx).copied().unwrap_or(0.0)
+            };
+
+            if dst_idx + 3 > scratch.len() {
+                return;
+            }
+
+            scratch[dst_idx]     = get(base + 0 * len);
+            scratch[dst_idx + 1] = get(base + 1 * len);
+            scratch[dst_idx + 2] = get(base + 2 * len);
+
+            dst_idx += 3;
+        }
+
+        src_idx += len;         // from loop (src = src.offset(1))
+        src_idx += 2 * len;     // final jump
+        sfb_idx += 3;
     }
-    memcpy(
-        grbuf as *mut (),
-        scratch as *const (),
-        (dst.offset_from(scratch) as isize as usize)
-            .wrapping_mul(::core::mem::size_of::<f32>() as usize),
-    );
+
+    // copy scratch → grbuf
+    let count = dst_idx.min(grbuf.len()).min(scratch.len());
+
+    grbuf[..count].copy_from_slice(&scratch[..count]);
 }
 fn L3_antialias(
     mut grbuf: &mut [f32],
@@ -1129,75 +1003,71 @@ fn L3_dct3_9(y: &mut [f32]) {
     y[8] = s4 + s7;
 }
 
-unsafe fn L3_imdct36(
-    mut grbuf: *mut f32,
-    mut overlap: *mut f32,
-    window: *const f32,
+fn L3_imdct36(
+    mut grbuf: &mut [f32],
+    mut overlap: &mut [f32],
+    window: &[f32],
     nbands: i32,
 ) {
-    let mut i: i32 = 0;
-    let mut j: i32 = 0;
-     
-    j = 0 as i32;
-    while j < nbands {
-        let mut co: [f32; 9] = [0.; 9];
-        let mut si: [f32; 9] = [0.; 9];
-        co[0 as i32 as usize] = -*grbuf.offset(0 as i32 as isize);
-        si[0 as i32 as usize] = *grbuf.offset(17 as i32 as isize);
-        i = 0 as i32;
-        while i < 4 as i32 {
-            si[(8 as i32 - 2 as i32 * i)
-                as usize] = *grbuf
-                .offset((4 as i32 * i + 1 as i32) as isize)
-                - *grbuf.offset((4 as i32 * i + 2 as i32) as isize);
-            co[(1 as i32 + 2 as i32 * i)
-                as usize] = *grbuf
-                .offset((4 as i32 * i + 1 as i32) as isize)
-                + *grbuf.offset((4 as i32 * i + 2 as i32) as isize);
-            si[(7 as i32 - 2 as i32 * i)
-                as usize] = *grbuf
-                .offset((4 as i32 * i + 4 as i32) as isize)
-                - *grbuf.offset((4 as i32 * i + 3 as i32) as isize);
-            co[(2 as i32 + 2 as i32 * i)
-                as usize] = -(*grbuf
-                .offset((4 as i32 * i + 3 as i32) as isize)
-                + *grbuf.offset((4 as i32 * i + 4 as i32) as isize));
-            i += 1;
+    let nbands = nbands as usize;
+
+    for _ in 0..nbands {
+        if grbuf.len() < 18 || overlap.len() < 9 || window.len() < 18 {
+            return;
         }
+
+        let mut co = [0.0f32; 9];
+        let mut si = [0.0f32; 9];
+
+        // --- input reordering ---
+        co[0] = -grbuf[0];
+        si[0] = grbuf[17];
+
+        for i in 0..4 {
+            si[8 - 2 * i] = grbuf[4 * i + 1] - grbuf[4 * i + 2];
+            co[1 + 2 * i] = grbuf[4 * i + 1] + grbuf[4 * i + 2];
+
+            si[7 - 2 * i] = grbuf[4 * i + 4] - grbuf[4 * i + 3];
+            co[2 + 2 * i] = -(grbuf[4 * i + 3] + grbuf[4 * i + 4]);
+        }
+
+        // --- transforms ---
         L3_dct3_9(&mut co);
         L3_dct3_9(&mut si);
-        si[1 as i32 as usize] = -si[1 as i32 as usize];
-        si[3 as i32 as usize] = -si[3 as i32 as usize];
-        si[5 as i32 as usize] = -si[5 as i32 as usize];
-        si[7 as i32 as usize] = -si[7 as i32 as usize];
-        i = 0 as i32;
-        while i < 9 as i32 {
-            let ovl: f32 = *overlap.offset(i as isize);
-            let sum: f32 = co[i as usize]
-                * L3_IMDCT36_G_TWID9[(9 as i32 + i) as usize]
-                + si[i as usize] * L3_IMDCT36_G_TWID9[(0 as i32 + i) as usize];
-            *overlap
-                .offset(
-                    i as isize,
-                ) = co[i as usize] * L3_IMDCT36_G_TWID9[(0 as i32 + i) as usize]
-                - si[i as usize] * L3_IMDCT36_G_TWID9[(9 as i32 + i) as usize];
-            *grbuf
-                .offset(
-                    i as isize,
-                ) = ovl * *window.offset((0 as i32 + i) as isize)
-                - sum * *window.offset((9 as i32 + i) as isize);
-            *grbuf
-                .offset(
-                    (17 as i32 - i) as isize,
-                ) = ovl * *window.offset((9 as i32 + i) as isize)
-                + sum * *window.offset((0 as i32 + i) as isize);
-            i += 1;
+
+        // sign flips
+        si[1] = -si[1];
+        si[3] = -si[3];
+        si[5] = -si[5];
+        si[7] = -si[7];
+
+        // --- window + overlap ---
+        for i in 0..9 {
+            let ovl = overlap[i];
+
+            let sum =
+                co[i] * L3_IMDCT36_G_TWID9[9 + i]
+                + si[i] * L3_IMDCT36_G_TWID9[i];
+
+            overlap[i] =
+                co[i] * L3_IMDCT36_G_TWID9[i]
+                - si[i] * L3_IMDCT36_G_TWID9[9 + i];
+
+            grbuf[i] =
+                ovl * window[i]
+                - sum * window[9 + i];
+
+            grbuf[17 - i] =
+                ovl * window[9 + i]
+                + sum * window[i];
         }
-        j += 1;
-        grbuf = grbuf.offset(18 as i32 as isize);
-        overlap = overlap.offset(9 as i32 as isize);
+
+        // advance to next band
+        grbuf = &mut grbuf[18..];
+        overlap = &mut overlap[9..];
     }
 }
+
 fn L3_idct3(
     x0: f32,
     x1: f32,
@@ -1210,89 +1080,7 @@ fn L3_idct3(
     dst[0] = a1 + m1;
     dst[2] = a1 - m1;
 }
-unsafe fn L3_imdct12(
-    x: *mut f32,
-    dst: *mut f32,
-    overlap: *mut f32,
-) {
-    let mut co: [f32; 3] = [0.; 3];
-    let mut si: [f32; 3] = [0.; 3];
-    let mut i: i32 = 0;
-    L3_idct3(
-        -*x.offset(0 as i32 as isize),
-        *x.offset(6 as i32 as isize) + *x.offset(3 as i32 as isize),
-        *x.offset(12 as i32 as isize) + *x.offset(9 as i32 as isize),
-        &mut co,
-    );
-    L3_idct3(
-        *x.offset(15 as i32 as isize),
-        *x.offset(12 as i32 as isize) - *x.offset(9 as i32 as isize),
-        *x.offset(6 as i32 as isize) - *x.offset(3 as i32 as isize),
-        &mut si,
-    );
-    si[1 as i32 as usize] = -si[1 as i32 as usize];
-    i = 0 as i32;
-    while i < 3 as i32 {
-        let ovl: f32 = *overlap.offset(i as isize);
-        let sum: f32 = co[i as usize]
-            * L3_IMDCT12_G_TWID3[(3 as i32 + i) as usize]
-            + si[i as usize] * L3_IMDCT12_G_TWID3[(0 as i32 + i) as usize];
-        *overlap
-            .offset(
-                i as isize,
-            ) = co[i as usize] * L3_IMDCT12_G_TWID3[(0 as i32 + i) as usize]
-            - si[i as usize] * L3_IMDCT12_G_TWID3[(3 as i32 + i) as usize];
-        *dst
-            .offset(
-                i as isize,
-            ) = ovl * L3_IMDCT12_G_TWID3[(2 as i32 - i) as usize]
-            - sum * L3_IMDCT12_G_TWID3[(5 as i32 - i) as usize];
-        *dst
-            .offset(
-                (5 as i32 - i) as isize,
-            ) = ovl * L3_IMDCT12_G_TWID3[(5 as i32 - i) as usize]
-            + sum * L3_IMDCT12_G_TWID3[(2 as i32 - i) as usize];
-        i += 1;
-    }
-}
-unsafe fn L3_imdct_short(
-    mut grbuf: *mut f32,
-    mut overlap: *mut f32,
-    mut nbands: i32,
-) {
-    while nbands > 0 as i32 {
-        let mut tmp: [f32; 18] = [0.; 18];
-        memcpy(
-            tmp.as_mut_ptr() as *mut (),
-            grbuf as *const (),
-            ::core::mem::size_of::<[f32; 18]>() as usize,
-        );
-        memcpy(
-            grbuf as *mut (),
-            overlap as *const (),
-            (6 as i32 as usize)
-                .wrapping_mul(::core::mem::size_of::<f32>() as usize),
-        );
-        L3_imdct12(
-            tmp.as_mut_ptr(),
-            grbuf.offset(6 as i32 as isize),
-            overlap.offset(6 as i32 as isize),
-        );
-        L3_imdct12(
-            tmp.as_mut_ptr().offset(1 as i32 as isize),
-            grbuf.offset(12 as i32 as isize),
-            overlap.offset(6 as i32 as isize),
-        );
-        L3_imdct12(
-            tmp.as_mut_ptr().offset(2 as i32 as isize),
-            overlap,
-            overlap.offset(6 as i32 as isize),
-        );
-        nbands -= 1;
-        overlap = overlap.offset(9 as i32 as isize);
-        grbuf = grbuf.offset(18 as i32 as isize);
-    }
-}
+
 fn L3_change_sign(mut grbuf: &mut [f32]) {
     let mut b = 0u32;
     let mut i = 0usize;
@@ -1307,46 +1095,151 @@ fn L3_change_sign(mut grbuf: &mut [f32]) {
         if b < 32 { grbuf = &mut grbuf[36..]; }
     }
 }
-unsafe fn L3_imdct_gr(
-    mut grbuf: *mut f32,
-    mut overlap: *mut f32,
+
+
+fn L3_imdct12(
+    x: &[f32],
+    dst: &mut [f32],
+    overlap: &mut [f32],
+) {
+    if x.len() < 15 || dst.len() < 6 || overlap.len() < 3 {
+        return;
+    }
+
+    let mut co = [0.0f32; 3];
+    let mut si = [0.0f32; 3];
+
+    L3_idct3(
+        -x[0],
+        x[6] + x[3],
+        x[12] + x[9],
+        &mut co,
+    );
+
+    L3_idct3(
+        x[15],
+        x[12] - x[9],
+        x[6] - x[3],
+        &mut si,
+    );
+
+    si[1] = -si[1];
+
+    for i in 0..3 {
+        let ovl = overlap[i];
+
+        let sum =
+            co[i] * L3_IMDCT12_G_TWID3[3 + i]
+            + si[i] * L3_IMDCT12_G_TWID3[i];
+
+        overlap[i] =
+            co[i] * L3_IMDCT12_G_TWID3[i]
+            - si[i] * L3_IMDCT12_G_TWID3[3 + i];
+
+        dst[i] =
+            ovl * L3_IMDCT12_G_TWID3[2 - i]
+            - sum * L3_IMDCT12_G_TWID3[5 - i];
+
+        dst[5 - i] =
+            ovl * L3_IMDCT12_G_TWID3[5 - i]
+            + sum * L3_IMDCT12_G_TWID3[2 - i];
+    }
+}
+
+fn L3_imdct_short(
+    mut grbuf: &mut [f32],
+    mut overlap: &mut [f32],
+    mut nbands: i32,
+) {
+    while nbands > 0 {
+        if grbuf.len() < 18 || overlap.len() < 12 {
+            break;
+        }
+
+        let mut tmp = [0.0f32; 18];
+        tmp.copy_from_slice(&grbuf[..18]);
+
+        // overlap → grbuf (first 6)
+        grbuf[..6].copy_from_slice(&overlap[..6]);
+
+        // Split grbuf into disjoint parts
+        let (gr_head, gr_tail) = grbuf.split_at_mut(18);
+        let (_gr_first6, gr_rest) = gr_head.split_at_mut(6);    // gr_head[..6]
+        let (gr_6, gr_12) = gr_rest.split_at_mut(6);           // gr_head[6..12], gr_head[12..18]
+
+        // Split overlap into disjoint parts
+        let (ov_head, ov_rest) = overlap.split_at_mut(6);      // overlap[..6]
+        let (ov_mid, _) = ov_rest.split_at_mut(6);            // overlap[6..12]
+
+        // IMDCT calls (all borrows now disjoint)
+        L3_imdct12(&tmp, gr_6, ov_mid);
+        L3_imdct12(&tmp[1..], gr_12, ov_mid);
+        L3_imdct12(&tmp[2..], ov_head, ov_mid);
+
+        nbands -= 1;
+
+        // Advance slices safely
+        grbuf = gr_tail;
+        overlap = &mut overlap[9..];
+    }
+}
+
+fn L3_imdct_gr(
+    grbuf: &mut [f32],
+    overlap: &mut [f32],
     block_type: u32,
     n_long_bands: u32,
 ) {
+    let n_long_bands = n_long_bands as usize;
+
+    let mut grbuf = grbuf;
+    let mut overlap = overlap;
+
+    // --- long blocks ---
     if n_long_bands != 0 {
+        let gr_needed = 18 * n_long_bands;
+        let ov_needed = 9 * n_long_bands;
+
+        if grbuf.len() < gr_needed || overlap.len() < ov_needed {
+            return;
+        }
+
         L3_imdct36(
-            grbuf,
-            overlap,
-            (L3_IMDCT_GR_G_MDCT_WINDOW[0 as i32 as usize]).as_ptr(),
+            &mut grbuf[..gr_needed],
+            &mut overlap[..ov_needed],
+            &L3_IMDCT_GR_G_MDCT_WINDOW[0],
             n_long_bands as i32,
         );
-        grbuf = grbuf
-            .offset(
-                (18 as i32 as u32).wrapping_mul(n_long_bands) as isize,
-            );
-        overlap = overlap
-            .offset(
-                (9 as i32 as u32).wrapping_mul(n_long_bands) as isize,
-            );
+
+        // advance slices instead of pointer offset
+        grbuf = &mut grbuf[gr_needed..];
+        overlap = &mut overlap[ov_needed..];
     }
-    if block_type == 2 as i32 as u32 {
+
+    // --- remaining bands ---
+    let remaining = 32usize.saturating_sub(n_long_bands);
+
+    if remaining == 0 {
+        return;
+    }
+
+    if block_type == 2 {
         L3_imdct_short(
             grbuf,
             overlap,
-            (32 as i32 as u32).wrapping_sub(n_long_bands) as i32,
+            remaining as i32,
         );
     } else {
+        let win_idx = if block_type == 3 { 1 } else { 0 };
+
         L3_imdct36(
             grbuf,
             overlap,
-            (L3_IMDCT_GR_G_MDCT_WINDOW[(block_type == 3 as i32 as u32)
-                as i32 as usize])
-                .as_ptr(),
-            (32 as i32 as u32).wrapping_sub(n_long_bands) as i32,
+            &L3_IMDCT_GR_G_MDCT_WINDOW[win_idx],
+            remaining as i32,
         );
-    };
+    }
 }
-
 fn L3_save_reservoir(
     h: &mut mp3dec_t,
     s_bs: &mut bs_t
@@ -1396,651 +1289,473 @@ fn L3_restore_reservoir<'a>(
     *s_bs = bs_init(&s_maindata[..], bytes_have + frame_bytes);
     return ((*h).reserv >= main_data_begin) as i32;
 }
-unsafe fn L3_decode(
+fn L3_decode(
     h: &mut mp3dec_t,
     s: &mut mp3dec_scratch_t,
     s_bs: &mut bs_t,
     mut gr_info: &mut [L3_gr_info_t],
     nch: u32,
 ) {
-    let mut ch: u32 = 0;
-    while ch < nch {
-        let layer3gr_limit: i32 = s_bs.pos
-            + gr_info[ch as usize].part_23_length as i32;
+    let nch = nch as usize;
+
+    // --- per-channel decode ---
+    for ch in 0..nch {
+        if ch >= gr_info.len() {
+            return;
+        }
+
+        let gi = &gr_info[ch];
+
+        let layer3gr_limit = s_bs.pos + gi.part_23_length as i32;
+
         L3_decode_scalefactors(
-            &(*h).header,
-            ((*s).ist_pos[ch as usize]).as_mut_ptr(),
+            &h.header,
+            &mut s.ist_pos[ch],
             s_bs,
-            &gr_info[ch as usize],
-            ((*s).scf).as_mut_ptr(),
-            ch,
+            gi,
+            &mut s.scf,
+            ch as u32,
         );
+
         L3_huffman(
-            ((*s).grbuf[ch as usize]).as_mut_ptr(),
+            &mut s.grbuf[ch],
             s_bs,
-            &gr_info[ch as usize],
-            ((*s).scf).as_mut_ptr(),
+            gi,
+            &mut s.scf,
             layer3gr_limit,
         );
-        ch += 1;
     }
-    if (*h).header[3 as i32 as usize] as i32 & 0x10 as i32 != 0 {
+
+    // --- stereo processing ---
+    if h.header.get(3).copied().unwrap_or(0) & 0x10 != 0 {
         L3_intensity_stereo(
-            (*s).grbuf.as_flattened_mut(),
-            ((*s).ist_pos[1 as i32 as usize]).as_mut_ptr(),
+            s.grbuf.as_flattened_mut(),
+            &mut s.ist_pos[1],
             gr_info,
-            &(*h).header,
+            &h.header,
         );
-    } else if (*h).header[3 as i32 as usize] as i32 & 0xe0 as i32
-        == 0x60 as i32
-    {
+    } else if h.header.get(3).copied().unwrap_or(0) & 0xe0 == 0x60 {
         L3_midside_stereo(
-            (*s).grbuf.as_flattened_mut(),
+            s.grbuf.as_flattened_mut(),
             576,
         );
     }
-    ch = 0;
-    while ch < nch {
-        let mut aa_bands: i32 = 31 as i32;
-        let n_long_bands: i32 = (if gr_info[0].mixed_block_flag
-            as i32 != 0
-        {
-            2 as i32
-        } else {
-            0 as i32
-        })
-            << (((*h).header[2 as i32 as usize] as i32
-                >> 2 as i32 & 3 as i32)
-                + (((*h).header[1 as i32 as usize] as i32
-                    >> 3 as i32 & 1 as i32)
-                    + ((*h).header[1 as i32 as usize] as i32
-                        >> 4 as i32 & 1 as i32)) * 3 as i32
-                == 2 as i32) as i32;
-        if gr_info[0].n_short_sfb != 0 {
-            aa_bands = n_long_bands - 1 as i32;
-            L3_reorder(
-                ((*s).grbuf[ch as usize])
-                    .as_mut_ptr()
-                    .offset((n_long_bands * 18 as i32) as isize),
-                (*s).syn.as_flattened_mut().as_mut_ptr(),
-                (gr_info[0].sfbtab).offset(gr_info[0].n_long_sfb as i32 as isize),
-            );
+
+    // --- per-channel post-processing ---
+    for ch in 0..nch {
+        if gr_info.is_empty() {
+            return;
         }
-        L3_antialias(&mut s.grbuf[ch as usize], aa_bands);
+
+        let gi = &gr_info[0];
+
+        let mut aa_bands = 31;
+
+        let header1 = h.header.get(1).copied().unwrap_or(0) as i32;
+        let header2 = h.header.get(2).copied().unwrap_or(0) as i32;
+
+        let n_long_bands =
+            (if gi.mixed_block_flag != 0 { 2 } else { 0 })
+                << (((header2 >> 2 & 3)
+                    + (((header1 >> 3 & 1) + (header1 >> 4 & 1)) * 3)
+                    == 2) as i32);
+
+        if gi.n_short_sfb != 0 {
+            aa_bands = n_long_bands - 1;
+
+            let start = (n_long_bands * 18) as usize;
+
+            if start < s.grbuf[ch].len() {
+                // Create a safe slice from the raw pointer
+                let sfb_slice = unsafe { core::slice::from_raw_parts(gi.sfbtab, (gi.n_long_sfb + gi.n_short_sfb) as usize) };
+                L3_reorder(
+                    &mut s.grbuf[ch][start..],
+                    s.syn.as_flattened_mut(),
+                    sfb_slice,
+                );
+            }
+        }
+
+        L3_antialias(&mut s.grbuf[ch], aa_bands);
+
         L3_imdct_gr(
-            ((*s).grbuf[ch as usize]).as_mut_ptr(),
-            ((*h).mdct_overlap[ch as usize]).as_mut_ptr(),
-            gr_info[0].block_type as u32,
+            &mut s.grbuf[ch],
+            &mut h.mdct_overlap[ch],
+            gi.block_type as u32,
             n_long_bands as u32,
         );
-        L3_change_sign(&mut (*s).grbuf[ch as usize]);
-        ch += 1;
+
+        L3_change_sign(&mut s.grbuf[ch]);
+
         gr_info = &mut gr_info[1..];
     }
 }
-unsafe fn mp3d_DCT_II(grbuf: *mut f32, n: u32) {
-    let mut i: i32 = 0;
-    let mut k = 0;
-    while k < n {
-        let mut t: [[f32; 8]; 4] = [[0.; 8]; 4];
-        let mut x: *mut f32 = t.as_flattened_mut().as_mut_ptr();
-        let mut y: *mut f32 = grbuf.offset(k as isize);
-        i = 0 as i32;
-        while i < 8 as i32 {
-            let x0: f32 = *y.offset((i * 18 as i32) as isize);
-            let x1: f32 = *y
-                .offset(((15 as i32 - i) * 18 as i32) as isize);
-            let x2: f32 = *y
-                .offset(((16 as i32 + i) * 18 as i32) as isize);
-            let x3: f32 = *y
-                .offset(((31 as i32 - i) * 18 as i32) as isize);
-            let t0: f32 = x0 + x3;
-            let t1: f32 = x1 + x2;
-            let t2: f32 = (x1 - x2)
-                * MP3D_DCT_II_G_SEC[(3 as i32 * i + 0 as i32) as usize];
-            let t3: f32 = (x0 - x3)
-                * MP3D_DCT_II_G_SEC[(3 as i32 * i + 1 as i32) as usize];
-            *x.offset(0 as i32 as isize) = t0 + t1;
-            *x
-                .offset(
-                    8 as i32 as isize,
-                ) = (t0 - t1)
-                * MP3D_DCT_II_G_SEC[(3 as i32 * i + 2 as i32) as usize];
-            *x.offset(16 as i32 as isize) = t3 + t2;
-            *x
-                .offset(
-                    24 as i32 as isize,
-                ) = (t3 - t2)
-                * MP3D_DCT_II_G_SEC[(3 as i32 * i + 2 as i32) as usize];
-            i += 1;
-            x = x.offset(1);
+
+fn mp3d_DCT_II(grbuf: &mut [f32], n: u32) {
+    let n = n as usize;
+
+    for k in 0..n {
+        let mut t = [[0.0f32; 8]; 4];
+
+        // --- first stage ---
+        for i in 0..8 {
+            let base = k;
+
+            let get = |idx: usize| -> f32 {
+                grbuf.get(base + idx * 18).copied().unwrap_or(0.0)
+            };
+
+            let x0 = get(i);
+            let x1 = get(15 - i);
+            let x2 = get(16 + i);
+            let x3 = get(31 - i);
+
+            let t0 = x0 + x3;
+            let t1 = x1 + x2;
+            let t2 = (x1 - x2) * MP3D_DCT_II_G_SEC[3 * i];
+            let t3 = (x0 - x3) * MP3D_DCT_II_G_SEC[3 * i + 1];
+
+            t[0][i] = t0 + t1;
+            t[1][i] = (t0 - t1) * MP3D_DCT_II_G_SEC[3 * i + 2];
+            t[2][i] = t3 + t2;
+            t[3][i] = (t3 - t2) * MP3D_DCT_II_G_SEC[3 * i + 2];
         }
-        x = t.as_flattened_mut().as_mut_ptr();
-        i = 0 as i32;
-        while i < 4 as i32 {
-            let mut x0_0: f32 = *x.offset(0 as i32 as isize);
-            let mut x1_0: f32 = *x.offset(1 as i32 as isize);
-            let mut x2_0: f32 = *x.offset(2 as i32 as isize);
-            let mut x3_0: f32 = *x.offset(3 as i32 as isize);
-            let mut x4: f32 = *x.offset(4 as i32 as isize);
-            let mut x5: f32 = *x.offset(5 as i32 as isize);
-            let mut x6: f32 = *x.offset(6 as i32 as isize);
-            let mut x7: f32 = *x.offset(7 as i32 as isize);
-            let mut xt: f32 = 0.;
-            xt = x0_0 - x7;
-            x0_0 += x7;
-            x7 = x1_0 - x6;
-            x1_0 += x6;
-            x6 = x2_0 - x5;
-            x2_0 += x5;
-            x5 = x3_0 - x4;
-            x3_0 += x4;
-            x4 = x0_0 - x3_0;
-            x0_0 += x3_0;
-            x3_0 = x1_0 - x2_0;
-            x1_0 += x2_0;
-            *x.offset(0 as i32 as isize) = x0_0 + x1_0;
-            *x.offset(4 as i32 as isize) = (x0_0 - x1_0) * 0.70710677f32;
-            x5 = x5 + x6;
-            x6 = (x6 + x7) * 0.70710677f32;
-            x7 = x7 + xt;
-            x3_0 = (x3_0 + x4) * 0.70710677f32;
-            x5 -= x7 * 0.198912367f32;
-            x7 += x5 * 0.382683432f32;
-            x5 -= x7 * 0.198912367f32;
-            x0_0 = xt - x6;
+
+        // --- second stage ---
+        for row in 0..4 {
+            let mut x = t[row];
+
+            let mut xt = x[0] - x[7];
+            x[0] += x[7];
+            x[7] = x[1] - x[6];
+            x[1] += x[6];
+            x[6] = x[2] - x[5];
+            x[2] += x[5];
+            x[5] = x[3] - x[4];
+            x[3] += x[4];
+
+            let x4 = x[0] - x[3];
+            x[0] += x[3];
+            let x3 = x[1] - x[2];
+            x[1] += x[2];
+
+            t[row][0] = x[0] + x[1];
+            t[row][4] = (x[0] - x[1]) * 0.70710677;
+
+            let mut x5 = x[5] + x[6];
+            let x6 = (x[6] + x[7]) * 0.70710677;
+            let mut x7 = x[7] + xt;
+            let x3 = (x3 + x4) * 0.70710677;
+
+            x5 -= x7 * 0.198912367;
+            x7 += x5 * 0.382683432;
+            x5 -= x7 * 0.198912367;
+
+            let x0 = xt - x6;
             xt += x6;
-            *x.offset(1 as i32 as isize) = (xt + x7) * 0.50979561f32;
-            *x.offset(2 as i32 as isize) = (x4 + x3_0) * 0.54119611f32;
-            *x.offset(3 as i32 as isize) = (x0_0 - x5) * 0.60134488f32;
-            *x.offset(5 as i32 as isize) = (x0_0 + x5) * 0.89997619f32;
-            *x.offset(6 as i32 as isize) = (x4 - x3_0) * 1.30656302f32;
-            *x.offset(7 as i32 as isize) = (xt - x7) * 2.56291556f32;
-            i += 1;
-            x = x.offset(8 as i32 as isize);
+
+            t[row][1] = (xt + x7) * 0.50979561;
+            t[row][2] = (x4 + x3) * 0.54119611;
+            t[row][3] = (x0 - x5) * 0.60134488;
+            t[row][5] = (x0 + x5) * 0.89997619;
+            t[row][6] = (x4 - x3) * 1.30656302;
+            t[row][7] = (xt - x7) * 2.56291556;
         }
-        i = 0 as i32;
-        while i < 7 as i32 {
-            *y
-                .offset(
-                    (0 as i32 * 18 as i32) as isize,
-                ) = t[0 as i32 as usize][i as usize];
-            *y
-                .offset(
-                    (1 as i32 * 18 as i32) as isize,
-                ) = t[2 as i32 as usize][i as usize]
-                + t[3 as i32 as usize][i as usize]
-                + t[3 as i32 as usize][(i + 1 as i32) as usize];
-            *y
-                .offset(
-                    (2 as i32 * 18 as i32) as isize,
-                ) = t[1 as i32 as usize][i as usize]
-                + t[1 as i32 as usize][(i + 1 as i32) as usize];
-            *y
-                .offset(
-                    (3 as i32 * 18 as i32) as isize,
-                ) = t[2 as i32 as usize][(i + 1 as i32) as usize]
-                + t[3 as i32 as usize][i as usize]
-                + t[3 as i32 as usize][(i + 1 as i32) as usize];
-            i += 1;
-            y = y.offset((4 as i32 * 18 as i32) as isize);
+
+        // --- write back ---
+        let mut y_base = k;
+
+        for i in 0..7 {
+            let set = |buf: &mut [f32], idx: usize, val: f32| {
+                if let Some(x) = buf.get_mut(idx) {
+                    *x = val;
+                }
+            };
+
+            set(grbuf, y_base + 0 * 18, t[0][i]);
+            set(
+                grbuf,
+                y_base + 1 * 18,
+                t[2][i] + t[3][i] + t[3][i + 1],
+            );
+            set(
+                grbuf,
+                y_base + 2 * 18,
+                t[1][i] + t[1][i + 1],
+            );
+            set(
+                grbuf,
+                y_base + 3 * 18,
+                t[2][i + 1] + t[3][i] + t[3][i + 1],
+            );
+
+            y_base += 4 * 18;
         }
-        *y
-            .offset(
-                (0 as i32 * 18 as i32) as isize,
-            ) = t[0 as i32 as usize][7 as i32 as usize];
-        *y
-            .offset(
-                (1 as i32 * 18 as i32) as isize,
-            ) = t[2 as i32 as usize][7 as i32 as usize]
-            + t[3 as i32 as usize][7 as i32 as usize];
-        *y
-            .offset(
-                (2 as i32 * 18 as i32) as isize,
-            ) = t[1 as i32 as usize][7 as i32 as usize];
-        *y
-            .offset(
-                (3 as i32 * 18 as i32) as isize,
-            ) = t[3 as i32 as usize][7 as i32 as usize];
-        k += 1;
+
+        let set = |buf: &mut [f32], idx: usize, val: f32| {
+            if let Some(x) = buf.get_mut(idx) {
+                *x = val;
+            }
+        };
+
+        set(grbuf, y_base + 0 * 18, t[0][7]);
+        set(grbuf, y_base + 1 * 18, t[2][7] + t[3][7]);
+        set(grbuf, y_base + 2 * 18, t[1][7]);
+        set(grbuf, y_base + 3 * 18, t[3][7]);
     }
 }
-
 fn mp3d_scale_pcm(sample: f32) -> f32 {
     sample * (1f32/32768f32)
 }
 
-unsafe fn mp3d_synth_pair(
+fn mp3d_synth_pair(
     pcm: &mut [mp3d_sample_t],
     nch: u32,
-    mut z: *const f32,
+    z: &[f32],
 ) {
-    let mut a: f32 = 0.;
-    a = (*z.offset((14 as i32 * 64 as i32) as isize)
-        - *z.offset(0 as i32 as isize)) * 29 as i32 as f32;
-    a
-        += (*z.offset((1 as i32 * 64 as i32) as isize)
-            + *z.offset((13 as i32 * 64 as i32) as isize))
-            * 213 as i32 as f32;
-    a
-        += (*z.offset((12 as i32 * 64 as i32) as isize)
-            - *z.offset((2 as i32 * 64 as i32) as isize))
-            * 459 as i32 as f32;
-    a
-        += (*z.offset((3 as i32 * 64 as i32) as isize)
-            + *z.offset((11 as i32 * 64 as i32) as isize))
-            * 2037 as i32 as f32;
-    a
-        += (*z.offset((10 as i32 * 64 as i32) as isize)
-            - *z.offset((4 as i32 * 64 as i32) as isize))
-            * 5153 as i32 as f32;
-    a
-        += (*z.offset((5 as i32 * 64 as i32) as isize)
-            + *z.offset((9 as i32 * 64 as i32) as isize))
-            * 6574 as i32 as f32;
-    a
-        += (*z.offset((8 as i32 * 64 as i32) as isize)
-            - *z.offset((6 as i32 * 64 as i32) as isize))
-            * 37489 as i32 as f32;
-    a
-        += *z.offset((7 as i32 * 64 as i32) as isize)
-            * 75038 as i32 as f32;
-    pcm[0] = mp3d_scale_pcm(a);
-    z = z.offset(2 as i32 as isize);
-    a = *z.offset((14 as i32 * 64 as i32) as isize)
-        * 104 as i32 as f32;
-    a
-        += *z.offset((12 as i32 * 64 as i32) as isize)
-            * 1567 as i32 as f32;
-    a
-        += *z.offset((10 as i32 * 64 as i32) as isize)
-            * 9727 as i32 as f32;
-    a
-        += *z.offset((8 as i32 * 64 as i32) as isize)
-            * 64019 as i32 as f32;
-    a
-        += *z.offset((6 as i32 * 64 as i32) as isize)
-            * -(9975 as i32) as f32;
-    a
-        += *z.offset((4 as i32 * 64 as i32) as isize)
-            * -(45 as i32) as f32;
-    a
-        += *z.offset((2 as i32 * 64 as i32) as isize)
-            * 146 as i32 as f32;
-    a
-        += *z.offset((0 as i32 * 64 as i32) as isize)
-            * -(5 as i32) as f32;
-    pcm[(16 * nch) as usize] = mp3d_scale_pcm(a);
-}
-unsafe fn mp3d_synth(
-    xl: *mut f32,
-    dstl: &mut [mp3d_sample_t],
-    nch: u32,
-    lins: *mut f32,
-) {
-    let mut i: i32 = 0;
-    let xr: *mut f32 = xl
-        .offset((576 * (nch - 1)) as isize);
-    let dstr_off = (nch-1) as usize;
+    let nch = nch as usize;
 
-    let zlin: *mut f32 = lins
-        .offset((15 as i32 * 64 as i32) as isize);
-    let mut w: *const f32 = MP3D_SYNTH_G_WIN.as_ptr();
-    *zlin
-        .offset(
-            (4 as i32 * 15 as i32) as isize,
-        ) = *xl.offset((18 as i32 * 16 as i32) as isize);
-    *zlin
-        .offset(
-            (4 as i32 * 15 as i32 + 1 as i32) as isize,
-        ) = *xr.offset((18 as i32 * 16 as i32) as isize);
-    *zlin
-        .offset(
-            (4 as i32 * 15 as i32 + 2 as i32) as isize,
-        ) = *xl.offset(0 as i32 as isize);
-    *zlin
-        .offset(
-            (4 as i32 * 15 as i32 + 3 as i32) as isize,
-        ) = *xr.offset(0 as i32 as isize);
-    *zlin
-        .offset(
-            (4 as i32 * 31 as i32) as isize,
-        ) = *xl
-        .offset((1 as i32 + 18 as i32 * 16 as i32) as isize);
-    *zlin
-        .offset(
-            (4 as i32 * 31 as i32 + 1 as i32) as isize,
-        ) = *xr
-        .offset((1 as i32 + 18 as i32 * 16 as i32) as isize);
-    *zlin
-        .offset(
-            (4 as i32 * 31 as i32 + 2 as i32) as isize,
-        ) = *xl.offset(1 as i32 as isize);
-    *zlin
-        .offset(
-            (4 as i32 * 31 as i32 + 3 as i32) as isize,
-        ) = *xr.offset(1 as i32 as isize);
-    mp3d_synth_pair(
-        &mut dstl[dstr_off..],
-        nch,
-        lins
-            .offset((4 as i32 * 15 as i32) as isize)
-            .offset(1 as i32 as isize),
-    );
-    mp3d_synth_pair(
-        &mut dstl[dstr_off+(32 * nch) as usize..],
-        nch,
-        lins
-            .offset((4 as i32 * 15 as i32) as isize)
-            .offset(64 as i32 as isize)
-            .offset(1 as i32 as isize),
-    );
-    mp3d_synth_pair(
-        dstl,
-        nch,
-        lins.offset((4 as i32 * 15 as i32) as isize),
-    );
-    mp3d_synth_pair(
-        &mut dstl[(32 * nch) as usize..],
-        nch,
-        lins
-            .offset((4 as i32 * 15 as i32) as isize)
-            .offset(64 as i32 as isize),
-    );
-    i = 14;
-    while i >= 0 {
-        let mut a: [f32; 4] = [0.; 4];
-        let mut b: [f32; 4] = [0.; 4];
-        *zlin
-            .offset(
-                (4 * i) as isize,
-            ) = *xl.offset((18 * (31 - i)) as isize);
-        *zlin
-            .offset(
-                (4 * i + 1) as isize,
-            ) = *xr.offset((18 * (31 - i)) as isize);
-        *zlin
-            .offset(
-                (4 * i + 2) as isize,
-            ) = *xl
-            .offset(
-                (1 + 18 * (31 - i)) as isize,
-            );
-        *zlin
-            .offset(
-                (4 * i + 3) as isize,
-            ) = *xr
-            .offset(
-                (1 + 18 * (31 - i)) as isize,
-            );
-        *zlin
-            .offset(
-                (4 * (i + 16)) as isize,
-            ) = *xl
-            .offset(
-                (1 + 18 * (1 + i)) as isize,
-            );
-        *zlin
-            .offset(
-                (4 * (i + 16) + 1) as isize,
-            ) = *xr
-            .offset(
-                (1 + 18 * (1 + i)) as isize,
-            );
-        *zlin
-            .offset(
-                (4 * (i - 16) + 2) as isize,
-            ) = *xl.offset((18 * (1 + i)) as isize);
-        *zlin
-            .offset(
-                (4 * (i - 16) + 3) as isize,
-            ) = *xr.offset((18 * (1 + i)) as isize);
-        let mut j: i32 = 0;
-        let fresh22 = w;
-        w = w.offset(1);
-        let w0: f32 = *fresh22;
-        let fresh23 = w;
-        w = w.offset(1);
-        let w1: f32 = *fresh23;
-        let vz: *mut f32 = zlin
-            .offset(
-                (4 * i - 0 * 64) as isize,
-            );
-        let vy: *mut f32 = zlin
-            .offset(
-                (4 * i
-                    - (15 - 0) * 64)
-                    as isize,
-            );
-        j = 0;
-        while j < 4 {
-            b[j as usize] = *vz.offset(j as isize) * w1 + *vy.offset(j as isize) * w0;
-            a[j as usize] = *vz.offset(j as isize) * w0 - *vy.offset(j as isize) * w1;
-            j += 1;
-        }
-        let mut j_0: i32 = 0;
-        let fresh24 = w;
-        w = w.offset(1);
-        let w0_0: f32 = *fresh24;
-        let fresh25 = w;
-        w = w.offset(1);
-        let w1_0: f32 = *fresh25;
-        let vz_0: *mut f32 = zlin
-            .offset(
-                (4 * i - 1 * 64) as isize,
-            );
-        let vy_0: *mut f32 = zlin
-            .offset(
-                (4 * i
-                    - (15 - 1) * 64)
-                    as isize,
-            );
-        j_0 = 0 as i32;
-        while j_0 < 4 as i32 {
-            b[j_0 as usize]
-                += *vz_0.offset(j_0 as isize) * w1_0 + *vy_0.offset(j_0 as isize) * w0_0;
-            a[j_0 as usize]
-                += *vy_0.offset(j_0 as isize) * w1_0 - *vz_0.offset(j_0 as isize) * w0_0;
-            j_0 += 1;
-        }
-        let mut j_1: i32 = 0;
-        let fresh26 = w;
-        w = w.offset(1);
-        let w0_1: f32 = *fresh26;
-        let fresh27 = w;
-        w = w.offset(1);
-        let w1_1: f32 = *fresh27;
-        let vz_1: *mut f32 = zlin
-            .offset(
-                (4 * i - 2 * 64) as isize,
-            );
-        let vy_1: *mut f32 = zlin
-            .offset(
-                (4 * i
-                    - (15 - 2) * 64)
-                    as isize,
-            );
-        j_1 = 0 as i32;
-        while j_1 < 4 as i32 {
-            b[j_1 as usize]
-                += *vz_1.offset(j_1 as isize) * w1_1 + *vy_1.offset(j_1 as isize) * w0_1;
-            a[j_1 as usize]
-                += *vz_1.offset(j_1 as isize) * w0_1 - *vy_1.offset(j_1 as isize) * w1_1;
-            j_1 += 1;
-        }
-        let mut j_2: i32 = 0;
-        let fresh28 = w;
-        w = w.offset(1);
-        let w0_2: f32 = *fresh28;
-        let fresh29 = w;
-        w = w.offset(1);
-        let w1_2: f32 = *fresh29;
-        let vz_2: *mut f32 = zlin
-            .offset(
-                (4 * i - 3 * 64) as isize,
-            );
-        let vy_2: *mut f32 = zlin
-            .offset(
-                (4 * i
-                    - (15 - 3) * 64)
-                    as isize,
-            );
-        j_2 = 0 as i32;
-        while j_2 < 4 as i32 {
-            b[j_2 as usize]
-                += *vz_2.offset(j_2 as isize) * w1_2 + *vy_2.offset(j_2 as isize) * w0_2;
-            a[j_2 as usize]
-                += *vy_2.offset(j_2 as isize) * w1_2 - *vz_2.offset(j_2 as isize) * w0_2;
-            j_2 += 1;
-        }
-        let mut j_3: i32 = 0;
-        let fresh30 = w;
-        w = w.offset(1);
-        let w0_3: f32 = *fresh30;
-        let fresh31 = w;
-        w = w.offset(1);
-        let w1_3: f32 = *fresh31;
-        let vz_3: *mut f32 = zlin
-            .offset(
-                (4 * i - 4 * 64) as isize,
-            );
-        let vy_3: *mut f32 = zlin
-            .offset(
-                (4 * i
-                    - (15 - 4) * 64)
-                    as isize,
-            );
-        j_3 = 0 as i32;
-        while j_3 < 4 as i32 {
-            b[j_3 as usize]
-                += *vz_3.offset(j_3 as isize) * w1_3 + *vy_3.offset(j_3 as isize) * w0_3;
-            a[j_3 as usize]
-                += *vz_3.offset(j_3 as isize) * w0_3 - *vy_3.offset(j_3 as isize) * w1_3;
-            j_3 += 1;
-        }
-        let mut j_4: i32 = 0;
-        let fresh32 = w;
-        w = w.offset(1);
-        let w0_4: f32 = *fresh32;
-        let fresh33 = w;
-        w = w.offset(1);
-        let w1_4: f32 = *fresh33;
-        let vz_4: *mut f32 = zlin
-            .offset(
-                (4 * i - 5 * 64) as isize,
-            );
-        let vy_4: *mut f32 = zlin
-            .offset(
-                (4 * i
-                    - (15 - 5) * 64)
-                    as isize,
-            );
-        j_4 = 0 as i32;
-        while j_4 < 4 as i32 {
-            b[j_4 as usize]
-                += *vz_4.offset(j_4 as isize) * w1_4 + *vy_4.offset(j_4 as isize) * w0_4;
-            a[j_4 as usize]
-                += *vy_4.offset(j_4 as isize) * w1_4 - *vz_4.offset(j_4 as isize) * w0_4;
-            j_4 += 1;
-        }
-        let mut j_5: i32 = 0;
-        let fresh34 = w;
-        w = w.offset(1);
-        let w0_5: f32 = *fresh34;
-        let fresh35 = w;
-        w = w.offset(1);
-        let w1_5: f32 = *fresh35;
-        let vz_5: *mut f32 = zlin
-            .offset(
-                (4 * i - 6 * 64) as isize,
-            );
-        let vy_5: *mut f32 = zlin
-            .offset(
-                (4 * i
-                    - (15 - 6) * 64)
-                    as isize,
-            );
-        j_5 = 0 as i32;
-        while j_5 < 4 as i32 {
-            b[j_5 as usize]
-                += *vz_5.offset(j_5 as isize) * w1_5 + *vy_5.offset(j_5 as isize) * w0_5;
-            a[j_5 as usize]
-                += *vz_5.offset(j_5 as isize) * w0_5 - *vy_5.offset(j_5 as isize) * w1_5;
-            j_5 += 1;
-        }
-        let mut j_6: i32 = 0;
-        let fresh36 = w;
-        w = w.offset(1);
-        let w0_6: f32 = *fresh36;
-        let fresh37 = w;
-        w = w.offset(1);
-        let w1_6: f32 = *fresh37;
-        let vz_6: *mut f32 = zlin
-            .offset(
-                (4 * i - 7 * 64) as isize,
-            );
-        let vy_6: *mut f32 = zlin
-            .offset(
-                (4 * i
-                    - (15 - 7) * 64)
-                    as isize,
-            );
-        j_6 = 0 as i32;
-        while j_6 < 4 as i32 {
-            b[j_6 as usize]
-                += *vz_6.offset(j_6 as isize) * w1_6 + *vy_6.offset(j_6 as isize) * w0_6;
-            a[j_6 as usize]
-                += *vy_6.offset(j_6 as isize) * w1_6 - *vz_6.offset(j_6 as isize) * w0_6;
-            j_6 += 1;
-        }
-        dstl[dstr_off+((15 - i as u32) * nch) as usize] = mp3d_scale_pcm(a[1]);
-        dstl[dstr_off+((17 + i as u32) * nch) as usize] = mp3d_scale_pcm(b[1]);
-        dstl[((15 - i as u32) * nch) as usize] = mp3d_scale_pcm(a[0]);
-        dstl[((17 + i as u32) * nch) as usize] = mp3d_scale_pcm(b[0 as i32 as usize]);
-        dstl[dstr_off+((47 - i as u32) * nch) as usize] = mp3d_scale_pcm(a[3 as i32 as usize]);
-        dstl[dstr_off+((49 + i as u32) * nch) as usize] = mp3d_scale_pcm(b[3 as i32 as usize]);
-        dstl[((47 - i as u32) * nch) as usize] = mp3d_scale_pcm(a[2 as i32 as usize]);
-        dstl[((49 + i as u32) * nch) as usize] = mp3d_scale_pcm(b[2 as i32 as usize]);
-        i -= 1;
+    // We access up to 14 * 64 + 2, so validate length
+    if z.len() < 14 * 64 + 2 {
+        return;
+    }
+
+    let get = |idx: usize| -> f32 {
+        z.get(idx).copied().unwrap_or(0.0)
+    };
+
+    // --- first sample ---
+    let mut a =
+        (get(14 * 64) - get(0)) * 29.0
+        + (get(1 * 64) + get(13 * 64)) * 213.0
+        + (get(12 * 64) - get(2 * 64)) * 459.0
+        + (get(3 * 64) + get(11 * 64)) * 2037.0
+        + (get(10 * 64) - get(4 * 64)) * 5153.0
+        + (get(5 * 64) + get(9 * 64)) * 6574.0
+        + (get(8 * 64) - get(6 * 64)) * 37489.0
+        + get(7 * 64) * 75038.0;
+
+    if let Some(x) = pcm.get_mut(0) {
+        *x = mp3d_scale_pcm(a);
+    }
+
+    // --- second sample (z offset by +2) ---
+    let get2 = |idx: usize| -> f32 {
+        z.get(idx + 2).copied().unwrap_or(0.0)
+    };
+
+    a =
+        get2(14 * 64) * 104.0
+        + get2(12 * 64) * 1567.0
+        + get2(10 * 64) * 9727.0
+        + get2(8 * 64) * 64019.0
+        + get2(6 * 64) * -9975.0
+        + get2(4 * 64) * -45.0
+        + get2(2 * 64) * 146.0
+        + get2(0) * -5.0;
+
+    let out_idx = 16 * nch;
+
+    if let Some(x) = pcm.get_mut(out_idx) {
+        *x = mp3d_scale_pcm(a);
     }
 }
-unsafe fn mp3d_synth_granule(
-    qmf_state: *mut f32,
-    grbuf: *mut f32,
+
+fn mp3d_synth(
+    xl: &[f32],
+    dstl: &mut [mp3d_sample_t],
+    nch: u32,
+    lins: &mut [f32],
+) {
+    let nch = nch as usize;
+    if nch == 0 {
+        return;
+    }
+
+    // Required sizes
+    if xl.len() < 576 * nch || lins.len() < (15 + 32) * 64 {
+        return;
+    }
+
+    // Split input for the last channel safely
+    let xr_offset = 576 * (nch - 1);
+    let xr = &xl[xr_offset..];
+
+    let zlin_offset = 15 * 64;
+    if zlin_offset >= lins.len() {
+        return;
+    }
+
+    let (_, zlin) = lins.split_at_mut(zlin_offset); // zlin is the tail slice
+
+    let dstr_off = nch - 1;
+
+    // Safe get/set helpers
+    let safe_get = |s: &[f32], idx: usize| -> f32 { s.get(idx).copied().unwrap_or(0.0) };
+    let safe_set = |s: &mut [f32], idx: usize, val: f32| {
+        if let Some(x) = s.get_mut(idx) {
+            *x = val;
+        }
+    };
+
+    // Initial writes into zlin
+    safe_set(zlin, 4 * 15, safe_get(xl, 18 * 16));
+    safe_set(zlin, 4 * 15 + 1, safe_get(xr, 18 * 16));
+    safe_set(zlin, 4 * 15 + 2, safe_get(xl, 0));
+    safe_set(zlin, 4 * 15 + 3, safe_get(xr, 0));
+
+    safe_set(zlin, 4 * 31, safe_get(xl, 1 + 18 * 16));
+    safe_set(zlin, 4 * 31 + 1, safe_get(xr, 1 + 18 * 16));
+    safe_set(zlin, 4 * 31 + 2, safe_get(xl, 1));
+    safe_set(zlin, 4 * 31 + 3, safe_get(xr, 1));
+
+    // synth_pair calls safely using only zlin
+    let mut call_pair = |offset: usize, zlin_off: usize| {
+        if offset < dstl.len() && zlin_off < zlin.len() {
+            mp3d_synth_pair(&mut dstl[offset..], nch as u32, &mut zlin[zlin_off..]);
+        }
+    };
+
+    call_pair(dstr_off, 4 * 15 + 1);
+    call_pair(dstr_off + 32 * nch, 4 * 15 + 64 + 1);
+    call_pair(0, 4 * 15);
+    call_pair(32 * nch, 4 * 15 + 64);
+
+    // Main loop: write into zlin safely
+    let mut w_iter = MP3D_SYNTH_G_WIN.iter();
+
+    for i in (0..=14).rev() {
+        let mut a = [0.0f32; 4];
+        let mut b = [0.0f32; 4];
+        let idx = i as usize;
+
+        // Write zlin values
+        safe_set(zlin, 4 * idx, safe_get(xl, 18 * (31 - idx)));
+        safe_set(zlin, 4 * idx + 1, safe_get(xr, 18 * (31 - idx)));
+        safe_set(zlin, 4 * idx + 2, safe_get(xl, 1 + 18 * (31 - idx)));
+        safe_set(zlin, 4 * idx + 3, safe_get(xr, 1 + 18 * (31 - idx)));
+
+        safe_set(zlin, 4 * (idx + 16), safe_get(xl, 1 + 18 * (1 + idx)));
+        safe_set(zlin, 4 * (idx + 16) + 1, safe_get(xr, 1 + 18 * (1 + idx)));
+
+        if idx >= 16 {
+            safe_set(zlin, 4 * (idx - 16) + 2, safe_get(xl, 18 * (1 + idx)));
+            safe_set(zlin, 4 * (idx - 16) + 3, safe_get(xr, 18 * (1 + idx)));
+        }
+
+        // 8 MAC blocks
+        for k in 0..8 {
+            let w0 = *w_iter.next().unwrap_or(&0.0);
+            let w1 = *w_iter.next().unwrap_or(&0.0);
+
+            for j in 0..4 {
+                let vz_base = 4 * idx + j + k * 64;
+                let vy_base = 4 * idx + j + (15 - k) * 64;
+
+                let vz = safe_get(zlin, vz_base);
+                let vy = safe_get(zlin, vy_base);
+
+                b[j] += vz * w1 + vy * w0;
+
+                if k % 2 == 0 {
+                    a[j] += vz * w0 - vy * w1;
+                } else {
+                    a[j] += vy * w1 - vz * w0;
+                }
+            }
+        }
+
+        let write = |dst: &mut [mp3d_sample_t], idx: usize, val: f32| {
+            if let Some(x) = dst.get_mut(idx) {
+                *x = mp3d_scale_pcm(val);
+            }
+        };
+
+        // Write outputs safely
+        write(dstl, dstr_off + (15 - idx) * nch, a[1]);
+        write(dstl, dstr_off + (17 + idx) * nch, b[1]);
+        write(dstl, (15 - idx) * nch, a[0]);
+        write(dstl, (17 + idx) * nch, b[0]);
+
+        write(dstl, dstr_off + (47 - idx) * nch, a[3]);
+        write(dstl, dstr_off + (49 + idx) * nch, b[3]);
+        write(dstl, (47 - idx) * nch, a[2]);
+        write(dstl, (49 + idx) * nch, b[2]);
+    }
+}
+
+fn mp3d_synth_granule(
+    qmf_state: &mut [f32],
+    grbuf: &mut [f32],
     nbands: u32,
     nch: u32,
     pcm: &mut [mp3d_sample_t],
-    lins: *mut f32,
+    lins: &mut [f32],
 ) {
-    let mut i: usize = 0;
-    while i < nch as usize {
-        mp3d_DCT_II(grbuf.offset((576 * i) as isize), nbands);
-        i += 1;
+    let nch = nch as usize;
+    let nbands = nbands as usize;
+
+    // --- Validate expected sizes (critical for safety) ---
+    let qmf_len = 15 * 64;
+
+    if qmf_state.len() < qmf_len || lins.len() < (nbands + 15) * 64 {
+        return;
     }
-    memcpy(
-        lins as *mut (),
-        qmf_state as *const (),
-        (::core::mem::size_of::<f32>() as usize)
-            .wrapping_mul(15 as i32 as usize)
-            .wrapping_mul(64 as i32 as usize),
-    );
-    i = 0;
-    while i < nbands as usize {
+
+    if grbuf.len() < 576 * nch {
+        return;
+    }
+
+    // --- DCT per channel ---
+    for ch in 0..nch {
+        let start = 576 * ch;
+        let end = start + 576;
+
+        if let Some(mut slice) = grbuf.get_mut(start..end) {
+            mp3d_DCT_II(&mut slice, nbands as u32);
+        } else {
+            return;
+        }
+    }
+
+    // --- copy qmf_state → lins ---
+    lins[..qmf_len].copy_from_slice(&qmf_state[..qmf_len]);
+
+    // --- synthesis ---
+    for i in (0..nbands).step_by(2) {
+        let mut grbuf_ptr = match grbuf.get_mut(i..) {
+            Some(s) => s,
+            None => return,
+        };
+
+        let pcm_offset = 32 * nch * i;
+        if pcm_offset >= pcm.len() {
+            return;
+        }
+
+        let pcm_slice = &mut pcm[pcm_offset..];
+
+        let lins_offset = i * 64;
+        if lins_offset >= lins.len() {
+            return;
+        }
+
+        let mut lins_ptr = &mut lins[lins_offset..];
+
         mp3d_synth(
-            grbuf.offset(i as isize),
-            &mut pcm[32 * nch as usize * i..],
-            nch,
-            lins.offset((i * 64) as isize),
+            &mut grbuf_ptr,
+            pcm_slice,
+            nch as u32,
+            &mut lins_ptr,
         );
-        i += 2;
     }
-    memcpy(
-        qmf_state as *mut (),
-        lins.offset((nbands * 64) as isize) as *const (),
-        (::core::mem::size_of::<f32>() as usize)
-            .wrapping_mul(15 as i32 as usize)
-            .wrapping_mul(64 as i32 as usize),
-    );
+
+    // --- copy lins → qmf_state ---
+    let tail_offset = nbands * 64;
+
+    if tail_offset + qmf_len <= lins.len() {
+        qmf_state.copy_from_slice(&lins[tail_offset..tail_offset + qmf_len]);
+    }
 }
 
 fn mp3d_match_frame(
@@ -2109,29 +1824,34 @@ fn mp3dec_init(dec: &mut mp3dec_t) {
     dec.header[0] = 0;
 }
 
-pub unsafe fn mp3dec_decode_frame(
+pub fn mp3dec_decode_frame(
     dec: &mut mp3dec_t,
     mp3: &[u8],
-    mut pcm: &mut [mp3d_sample_t],
+    pcm: &mut [mp3d_sample_t],
     info: &mut mp3dec_frame_info_t,
 ) -> i32 {
     let mut i: usize = 0;
     let mut igr = 0u32;
     let mut frame_size: usize = 0;
-    let mut success: i32 = 1 as i32;
-    let mut scratch: mp3dec_scratch_t = mp3dec_scratch_t {
-        grbuf: [[0.; 576]; 2],
-        scf: [0.; 40],
-        syn: [[0.; 64]; 33],
+    let mut success: i32 = 1;
+
+    let mut scratch = mp3dec_scratch_t {
+        grbuf: [[0.0; 576]; 2],
+        scf: [0.0; 40],
+        syn: [[0.0; 64]; 33],
         ist_pos: [[0; 39]; 2],
     };
+
     let mut scratch_maindata = [0u8; 2815];
+
     let mut scratch_bs = bs_t {
         buf: &[],
         pos: 0,
         limit: 0,
     };
-    let mut scratch_gr_info = [L3_gr_info_t {
+
+    // Explicit initializer (no Default)
+    let base_gr_info = L3_gr_info_t {
         sfbtab: core::ptr::null(),
         part_23_length: 0,
         big_values: 0,
@@ -2148,72 +1868,89 @@ pub unsafe fn mp3dec_decode_frame(
         scalefac_scale: 0,
         count1_table: 0,
         scfsi: 0,
-    }; 4];
+    };
+
+    let mut scratch_gr_info = [
+        base_gr_info,
+        base_gr_info,
+        base_gr_info,
+        base_gr_info,
+    ];
+
+    // --- Header validation ---
     if mp3.len() > 4
-        && (*dec).header[0 as i32 as usize] as i32 == 0xff as i32
+        && dec.header.get(0) == Some(&0xff)
         && hdr_compare(&dec.header, mp3)
     {
-        frame_size = hdr_frame_bytes(mp3, (*dec).free_format_bytes) + hdr_padding(mp3);
-        if frame_size != mp3.len()
-            && (frame_size + 4 > mp3.len()
-                || !hdr_compare(mp3, &mp3[frame_size..]))
-        {
-            frame_size = 0;
+        frame_size = hdr_frame_bytes(mp3, dec.free_format_bytes) + hdr_padding(mp3);
+
+        if frame_size != mp3.len() {
+            let valid_next = frame_size + 4 <= mp3.len()
+                && mp3.get(frame_size..)
+                    .map(|s| hdr_compare(mp3, s))
+                    .unwrap_or(false);
+
+            if !valid_next {
+                frame_size = 0;
+            }
         }
     }
+
+    // --- Find frame ---
     if frame_size == 0 {
         *dec = mp3dec_t::new();
-        i = mp3d_find_frame(
-            mp3,
-            &mut (*dec).free_format_bytes,
-            &mut frame_size,
-        );
+
+        i = mp3d_find_frame(mp3, &mut dec.free_format_bytes, &mut frame_size);
+
         if frame_size == 0 || i + frame_size > mp3.len() {
-            (*info).frame_bytes = i;
-            return 0 as i32;
+            info.frame_bytes = i;
+            return 0;
         }
     }
-    let hdr = &mp3[i..];
-    memcpy(
-        ((*dec).header).as_mut_ptr() as *mut (),
-        hdr.as_ptr() as *const (),
-        4 as i32 as usize,
-    );
-    (*info).frame_bytes = i + frame_size;
-    (*info).frame_offset = i;
-    (*info).channels = if hdr[3] & 0xc0 == 0xc0 {
-        1
-    } else {
-        2
+
+    let hdr = match mp3.get(i..) {
+        Some(h) if h.len() >= 4 => h,
+        _ => {
+            info.frame_bytes = i;
+            return 0;
+        }
     };
-    (*info).hz = hdr_sample_rate_hz(hdr) as i32;
-    (*info)
-        .layer = 4
-        - (hdr[1] >> 1
-            & 3);
-    (*info).bitrate_kbps = hdr_bitrate_kbps(hdr) as i32;
+
+    dec.header.copy_from_slice(&hdr[..4]);
+
+    info.frame_bytes = i + frame_size;
+    info.frame_offset = i;
+    info.channels = if hdr[3] & 0xc0 == 0xc0 { 1 } else { 2 };
+    info.hz = hdr_sample_rate_hz(hdr) as i32;
+    info.layer = 4 - ((hdr[1] >> 1) & 3);
+    info.bitrate_kbps = hdr_bitrate_kbps(hdr) as i32;
+
     if pcm.is_empty() {
         return hdr_frame_samples(hdr) as i32;
     }
-    let mut bs_frame = bs_init(
-        &hdr[4..],
-        (frame_size - 4) as i32,
-    );
+
+    let frame_data = match hdr.get(4..) {
+        Some(d) => d,
+        None => return 0,
+    };
+
+    let mut bs_frame = bs_init(frame_data, (frame_size - 4) as i32);
+
     if hdr[1] & 1 == 0 {
         get_bits(&mut bs_frame, 16);
     }
-    if (*info).layer == 3 {
-        let main_data_begin: i32 = L3_read_side_info(
-            &mut bs_frame,
-            &mut scratch_gr_info,
-            hdr,
-        );
-        if main_data_begin < 0 as i32
-            || bs_frame.pos > bs_frame.limit
-        {
+
+    let mut pcm_offset = 0;
+
+    if info.layer == 3 {
+        let main_data_begin =
+            L3_read_side_info(&mut bs_frame, &mut scratch_gr_info, hdr);
+
+        if main_data_begin < 0 || bs_frame.pos > bs_frame.limit {
             mp3dec_init(dec);
-            return 0 as i32;
+            return 0;
         }
+
         success = L3_restore_reservoir(
             dec,
             &mut bs_frame,
@@ -2221,34 +1958,50 @@ pub unsafe fn mp3dec_decode_frame(
             &mut scratch_bs,
             main_data_begin,
         );
+
         if success != 0 {
-            igr = 0;
-            while igr < (if hdr[1] & 0x8 != 0 { 2 } else { 1 })
-            {
-                scratch.grbuf.as_flattened_mut().fill(0f32);
+            let granules = if hdr[1] & 0x8 != 0 { 2 } else { 1 };
+
+            while igr < granules {
+                scratch.grbuf.as_flattened_mut().fill(0.0);
+
+                let start = (igr * info.channels as u32) as usize;
+
                 L3_decode(
                     dec,
                     &mut scratch,
                     &mut scratch_bs,
-                    &mut scratch_gr_info[(igr * (*info).channels) as usize..],
-                    (*info).channels,
+                    &mut scratch_gr_info[start..],
+                    info.channels,
                 );
+
+                let needed = 576 * info.channels as usize;
+
+                if pcm_offset + needed > pcm.len() {
+                    return 0; // prevent overflow
+                }
+
+                let pcm_slice = &mut pcm[pcm_offset..pcm_offset + needed];
+
                 mp3d_synth_granule(
-                    ((*dec).qmf_state).as_mut_ptr(),
-                    scratch.grbuf.as_flattened_mut().as_mut_ptr(),
+                    &mut dec.qmf_state,
+                    scratch.grbuf.as_flattened_mut(),
                     18,
-                    (*info).channels,
-                    pcm,
-                    scratch.syn.as_flattened_mut().as_mut_ptr(),
+                    info.channels,
+                    pcm_slice,
+                    scratch.syn.as_flattened_mut(),
                 );
+
+                pcm_offset += needed;
                 igr += 1;
-                pcm = &mut pcm[576 * ((*info).channels as usize)..];
             }
         }
+
         L3_save_reservoir(dec, &mut scratch_bs);
     } else {
-        return 0 as i32
+        return 0;
     }
-    return (success as u32)
-        .wrapping_mul(hdr_frame_samples(&dec.header)) as i32;
+
+    (success as u32)
+        .wrapping_mul(hdr_frame_samples(&dec.header)) as i32
 }
