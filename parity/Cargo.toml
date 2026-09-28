@@ -1,0 +1,12 @@
+[package]
+name = "nanomp3-parity"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Bit-exact comparison of nanomp3 against upstream minimp3 (C)"
+
+[dependencies]
+nanomp3 = { path = ".." }
+
+[build-dependencies]
+cc = "1"

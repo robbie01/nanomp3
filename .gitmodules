@@ -1,0 +1,3 @@
+[submodule "parity/minimp3"]
+	path = parity/minimp3
+	url = https://github.com/lieff/minimp3.git

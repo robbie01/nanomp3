@@ -11,6 +11,9 @@ authors = ["Robert B. Langer <robbie@sohio.net>"]
 categories = ["multimedia", "multimedia::audio", "multimedia::encoding", "no-std", "no-std::no-alloc"]
 keywords = ["audio", "codec", "decoder", "mp3", "mpeg"]
 
+[workspace]
+members = ["parity"]
+
 [dev-dependencies]
 byteorder = "1.5"
 
