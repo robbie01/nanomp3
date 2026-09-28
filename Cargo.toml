@@ -13,6 +13,16 @@ keywords = ["audio", "codec", "decoder", "mp3", "mpeg"]
 
 [workspace]
 members = ["parity"]
+exclude = ["fuzz"]
+
+[features]
+default = ["wide"]
+# Use the `wide` crate for explicit SIMD. Without it, the same kernels are
+# written over plain arrays and left to LLVM's auto-vectorizer.
+wide = ["dep:wide"]
+
+[dependencies]
+wide = { version = "1", default-features = false, optional = true }
 
 [dev-dependencies]
 byteorder = "1.5"
