@@ -1,17 +1,85 @@
-name: Run unit tests under miri
+name: CI
 
 on:
   push:
   pull_request:
 
-env: 
+env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build_and_test:
-    name: Rust project - latest
+  test:
+    name: Test + parity (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # x86-64 and ARM64 exercise different SIMD backends (SSE vs NEON).
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - run: rustup update stable && rustup default stable
+      - name: Unit tests
+        run: cargo test -p nanomp3
+      - name: Bit-exact parity with minimp3 (every feature combination)
+        shell: bash
+        run: |
+          for features in "" "--no-default-features" "--no-default-features --features wide" "--no-default-features --features layer12"; do
+            echo "::group::parity $features"
+            cargo test -p nanomp3-parity --release $features
+            echo "::endgroup::"
+          done
+
+  lint:
+    name: Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: rustup update nightly && rustup default nightly && rustup component add miri
-      - run: cargo miri test --verbose
+        with:
+          submodules: true
+      - run: rustup update stable && rustup default stable
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy -p nanomp3 --no-default-features -- -D warnings
+
+  no_std:
+    name: no_std + MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install 1.89 --profile minimal --target thumbv7em-none-eabihf,riscv32imac-unknown-none-elf
+      - run: cargo +1.89 build -p nanomp3 --target thumbv7em-none-eabihf
+      - run: cargo +1.89 build -p nanomp3 --target riscv32imac-unknown-none-elf --no-default-features
+
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install nightly --component miri && rustup default nightly
+      - run: cargo miri test -p nanomp3
+
+  fuzz:
+    name: Fuzz smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - run: rustup toolchain install nightly && rustup default nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: Seed corpus from the conformance vectors
+        run: |
+          mkdir -p seeds
+          for f in parity/minimp3/vectors/*.bit; do
+            head -c 8192 "$f" | { printf '\000'; cat; } > "seeds/$(basename "$f")"
+          done
+      - name: Run each target for 2 minutes
+        working-directory: fuzz
+        run: |
+          for t in decode differential; do
+            cargo fuzz run $t ../seeds -- -max_len=16384 -max_total_time=120
+          done
