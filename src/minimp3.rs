@@ -103,7 +103,7 @@ impl State {
 struct Scratch {
     grbuf: [[f32; 576]; 2],
     scf: [f32; 40],
-    syn: [f32; (18 + 15) * 2 * 32],
+    syn: [[f32; 4]; SYN_ROWS],
     ist_pos: [[u8; 39]; 2],
 }
 
@@ -122,7 +122,7 @@ impl Mp3Dec {
             scratch: Scratch {
                 grbuf: [[0.; 576]; 2],
                 scf: [0.; 40],
-                syn: [0.; (18 + 15) * 2 * 32],
+                syn: [[0.; 4]; SYN_ROWS],
                 ist_pos: [[0; 39]; 2],
             },
             maindata: [0; MAX_BITRESERVOIR_BYTES + MAX_L3_FRAME_PAYLOAD_BYTES],
@@ -986,7 +986,7 @@ fn l3_decode(h: &mut State, s: &mut Scratch, bs: &mut Bs, gr_info: &[GrInfo], nc
             aa_bands = n_long_bands.saturating_sub(1);
             l3_reorder(
                 &mut s.grbuf[ch][n_long_bands * 18..],
-                &mut s.syn,
+                s.syn.as_flattened_mut(),
                 &gr.sfbtab[gr.n_long_sfb as usize..],
             );
         }
@@ -1074,82 +1074,79 @@ fn mp3d_dct_ii(grbuf: &mut [f32; 576], n: usize) {
     }
 }
 
-/// `mp3d_synth_pair`: returns the two samples C writes to `pcm[0]` and `pcm[16*nch]`.
+/// `mp3d_synth_pair`: the two samples C writes to `pcm[0]` and `pcm[16*nch]`,
+/// read from `lane` (and `lane + 2`) of every 16th row starting at `row`.
 #[inline(always)]
-fn mp3d_synth_pair(z: &[f32]) -> (f32, f32) {
+fn mp3d_synth_pair(z: &[[f32; 4]; SYNTH_ROWS], row: usize, lane: usize) -> (f32, f32) {
+    let x = |m: usize| z[row + 16 * m][lane];
     let mut a;
-    a = (z[14 * 64] - z[0]) * 29.0;
-    a += (z[64] + z[13 * 64]) * 213.0;
-    a += (z[12 * 64] - z[2 * 64]) * 459.0;
-    a += (z[3 * 64] + z[11 * 64]) * 2037.0;
-    a += (z[10 * 64] - z[4 * 64]) * 5153.0;
-    a += (z[5 * 64] + z[9 * 64]) * 6574.0;
-    a += (z[8 * 64] - z[6 * 64]) * 37489.0;
-    a += z[7 * 64] * 75038.0;
+    a = (x(14) - x(0)) * 29.0;
+    a += (x(1) + x(13)) * 213.0;
+    a += (x(12) - x(2)) * 459.0;
+    a += (x(3) + x(11)) * 2037.0;
+    a += (x(10) - x(4)) * 5153.0;
+    a += (x(5) + x(9)) * 6574.0;
+    a += (x(8) - x(6)) * 37489.0;
+    a += x(7) * 75038.0;
     let first = a;
 
-    let z = &z[2..];
-    a = z[14 * 64] * 104.0;
-    a += z[12 * 64] * 1567.0;
-    a += z[10 * 64] * 9727.0;
-    a += z[8 * 64] * 64019.0;
-    a += z[6 * 64] * -9975.0;
-    a += z[4 * 64] * -45.0;
-    a += z[2 * 64] * 146.0;
-    a += z[0] * -5.0;
+    let x = |m: usize| z[row + 16 * m][lane + 2];
+    a = x(14) * 104.0;
+    a += x(12) * 1567.0;
+    a += x(10) * 9727.0;
+    a += x(8) * 64019.0;
+    a += x(6) * -9975.0;
+    a += x(4) * -45.0;
+    a += x(2) * 146.0;
+    a += x(0) * -5.0;
     (first, a)
 }
 
-/// Offset of `zlin` (the newest filterbank row) within one synth call's window of `lins`.
-const ZLIN: usize = 15 * 64;
-/// Size of the `lins` window one synth call touches.
-const SYNTH_WINDOW: usize = ZLIN + 2 * 64;
+// The polyphase filterbank history (`lins` in C) is viewed as rows of 4 floats:
+// [left even, right even, left odd, right odd]. In C terms, row `r` lane `l` is
+// `lins[4*r + l]`, and `zlin = lins + 15*64` starts at row `ZLIN`.
+const ZLIN: usize = 15 * 16;
+/// Rows of `lins` touched by one call to `mp3d_synth`.
+const SYNTH_ROWS: usize = ZLIN + 2 * 16;
 
-fn mp3d_synth<S: Sample>(xl: &[f32], xr: &[f32], dst: &mut [S], nch: usize, lins: &mut [f32]) {
-    let lins: &mut [f32; SYNTH_WINDOW] = (&mut lins[..SYNTH_WINDOW]).try_into().unwrap();
+fn mp3d_synth<S: Sample, const NCH: usize>(
+    xl: &[f32],
+    xr: &[f32],
+    dst: &mut [S],
+    lins: &mut [[f32; 4]; SYNTH_ROWS],
+) {
     let xl: &[f32; 560] = xl[..560].try_into().unwrap();
     let xr: &[f32; 560] = xr[..560].try_into().unwrap();
-    let dst = &mut dst[..64 * nch];
-    let r = nch - 1;
+    let dst = &mut dst[..64 * NCH];
+    let r = NCH - 1;
 
-    lins[ZLIN + 4 * 15] = xl[18 * 16];
-    lins[ZLIN + 4 * 15 + 1] = xr[18 * 16];
-    lins[ZLIN + 4 * 15 + 2] = xl[0];
-    lins[ZLIN + 4 * 15 + 3] = xr[0];
+    lins[ZLIN + 15] = [xl[18 * 16], xr[18 * 16], xl[0], xr[0]];
+    lins[ZLIN + 31] = [xl[1 + 18 * 16], xr[1 + 18 * 16], xl[1], xr[1]];
 
-    lins[ZLIN + 4 * 31] = xl[1 + 18 * 16];
-    lins[ZLIN + 4 * 31 + 1] = xr[1 + 18 * 16];
-    lins[ZLIN + 4 * 31 + 2] = xl[1];
-    lins[ZLIN + 4 * 31 + 3] = xr[1];
-
-    // For mono, the "right" writes land on the same samples and are then
-    // overwritten by the left ones, exactly as in C.
-    let mut pair = |at: usize, z: usize| {
-        let (a, b) = mp3d_synth_pair(&lins[z..]);
+    // For mono, C also computes "right" samples into the same slots and then
+    // overwrites them with the left ones; skipping them gives identical output.
+    let mut pair = |at: usize, row: usize, lane: usize| {
+        let (a, b) = mp3d_synth_pair(lins, row, lane);
         dst[at] = S::scale_pcm(a);
-        dst[at + 16 * nch] = S::scale_pcm(b);
+        dst[at + 16 * NCH] = S::scale_pcm(b);
     };
-    pair(r, 4 * 15 + 1);
-    pair(r + 32 * nch, 4 * 15 + 64 + 1);
-    pair(0, 4 * 15);
-    pair(32 * nch, 4 * 15 + 64);
+    if NCH == 2 {
+        pair(r, 15, 1);
+        pair(r + 32 * NCH, 31, 1);
+    }
+    pair(0, 15, 0);
+    pair(32 * NCH, 31, 0);
 
     for i in (0..15).rev() {
-        let c = 4 * i;
-        lins[ZLIN + c] = xl[18 * (31 - i)];
-        lins[ZLIN + c + 1] = xr[18 * (31 - i)];
-        lins[ZLIN + c + 2] = xl[1 + 18 * (31 - i)];
-        lins[ZLIN + c + 3] = xr[1 + 18 * (31 - i)];
-        lins[ZLIN + c + 64] = xl[1 + 18 * (1 + i)];
-        lins[ZLIN + c + 64 + 1] = xr[1 + 18 * (1 + i)];
-        lins[ZLIN + c - 64 + 2] = xl[18 * (1 + i)];
-        lins[ZLIN + c - 64 + 3] = xr[18 * (1 + i)];
+        lins[ZLIN + i] = [xl[18 * (31 - i)], xr[18 * (31 - i)], xl[1 + 18 * (31 - i)], xr[1 + 18 * (31 - i)]];
+        lins[ZLIN + 16 + i][0] = xl[1 + 18 * (1 + i)];
+        lins[ZLIN + 16 + i][1] = xr[1 + 18 * (1 + i)];
+        lins[ZLIN - 16 + i][2] = xl[18 * (1 + i)];
+        lins[ZLIN - 16 + i][3] = xr[18 * (1 + i)];
 
-        // One column of the 16-row filterbank history, 4 lanes at a time:
-        // [left even, right even, left odd, right odd].
-        let w = &MP3D_SYNTH_G_WIN[(14 - i) * 16..][..16];
-        let vz = |k: usize| F4::load(&lins[ZLIN + c - k * 64..]);
-        let vy = |k: usize| F4::load(&lins[c + k * 64..]);
+        let w: &[f32; 16] = MP3D_SYNTH_G_WIN[(14 - i) * 16..][..16].try_into().unwrap();
+        let vz = |k: usize| F4::load(&lins[ZLIN + i - 16 * k]);
+        let vy = |k: usize| F4::load(&lins[i + 16 * k]);
         let w0 = |k: usize| F4::splat(w[2 * k]);
         let w1 = |k: usize| F4::splat(w[2 * k + 1]);
         let mut b = vz(0) * w1(0) + vy(0) * w0(0);
@@ -1165,16 +1162,39 @@ fn mp3d_synth<S: Sample>(xl: &[f32], xr: &[f32], dst: &mut [S], nch: usize, lins
         }
         let (a, b) = (a.to_array(), b.to_array());
 
-        dst[r + (15 - i) * nch] = S::scale_pcm(a[1]);
-        dst[r + (17 + i) * nch] = S::scale_pcm(b[1]);
-        dst[(15 - i) * nch] = S::scale_pcm(a[0]);
-        dst[(17 + i) * nch] = S::scale_pcm(b[0]);
-        dst[r + (47 - i) * nch] = S::scale_pcm(a[3]);
-        dst[r + (49 + i) * nch] = S::scale_pcm(b[3]);
-        dst[(47 - i) * nch] = S::scale_pcm(a[2]);
-        dst[(49 + i) * nch] = S::scale_pcm(b[2]);
+        if NCH == 2 {
+            dst[r + (15 - i) * NCH] = S::scale_pcm(a[1]);
+            dst[r + (17 + i) * NCH] = S::scale_pcm(b[1]);
+        }
+        dst[(15 - i) * NCH] = S::scale_pcm(a[0]);
+        dst[(17 + i) * NCH] = S::scale_pcm(b[0]);
+        if NCH == 2 {
+            dst[r + (47 - i) * NCH] = S::scale_pcm(a[3]);
+            dst[r + (49 + i) * NCH] = S::scale_pcm(b[3]);
+        }
+        dst[(47 - i) * NCH] = S::scale_pcm(a[2]);
+        dst[(49 + i) * NCH] = S::scale_pcm(b[2]);
     }
 }
+
+fn mp3d_synth_all<S: Sample, const NCH: usize>(
+    grbuf: &[f32],
+    nbands: usize,
+    pcm: &mut [S],
+    lins: &mut [[f32; 4]; SYN_ROWS],
+) {
+    for i in (0..nbands).step_by(2) {
+        mp3d_synth::<S, NCH>(
+            &grbuf[i..],
+            &grbuf[576 * (NCH - 1) + i..],
+            &mut pcm[32 * NCH * i..],
+            (&mut lins[16 * i..16 * i + SYNTH_ROWS]).try_into().unwrap(),
+        );
+    }
+}
+
+/// Rows in the whole synthesis buffer (`syn` in C: `(18 + 15) * 2 * 32` floats).
+const SYN_ROWS: usize = (18 + 15) * 2 * 32 / 4;
 
 fn mp3d_synth_granule<S: Sample>(
     qmf_state: &mut [f32; 960],
@@ -1182,32 +1202,28 @@ fn mp3d_synth_granule<S: Sample>(
     nbands: usize,
     nch: usize,
     pcm: &mut [S],
-    lins: &mut [f32; (18 + 15) * 64],
+    lins: &mut [[f32; 4]; SYN_ROWS],
 ) {
     for ch in &mut grbuf[..nch] {
         mp3d_dct_ii(ch, nbands);
     }
 
-    lins[..15 * 64].copy_from_slice(qmf_state);
+    lins.as_flattened_mut()[..15 * 64].copy_from_slice(qmf_state);
 
     let grbuf = grbuf.as_flattened();
-    for i in (0..nbands).step_by(2) {
-        mp3d_synth(
-            &grbuf[i..],
-            &grbuf[576 * (nch - 1) + i..],
-            &mut pcm[32 * nch * i..],
-            nch,
-            &mut lins[i * 64..],
-        );
+    if nch == 1 {
+        mp3d_synth_all::<S, 1>(grbuf, nbands, pcm, lins);
+    } else {
+        mp3d_synth_all::<S, 2>(grbuf, nbands, pcm, lins);
     }
 
-    let tail = &lins[nbands * 64..nbands * 64 + 15 * 64];
+    let tail = &lins.as_flattened()[nbands * 64..nbands * 64 + 15 * 64];
     if nch == 1 {
         // Standard (not MINIMP3_NONSTANDARD_BUT_LOGICAL) behavior: a mono frame
         // only advances the left channel's filterbank history, so a later
         // switch to stereo starts the right channel from its old state.
-        for (q, &l) in qmf_state.iter_mut().zip(tail).step_by(2) {
-            *q = l;
+        for (q, l) in qmf_state.chunks_exact_mut(2).zip(tail.chunks_exact(2)) {
+            q[0] = l[0];
         }
     } else {
         qmf_state.copy_from_slice(tail);
