@@ -564,6 +564,42 @@ impl BitCache<'_> {
     }
 }
 
+/// Decodes Huffman pairs for one scalefactor band of the big-values region.
+#[inline(always)]
+fn l3_huffman_pairs<const LINBITS: bool>(
+    out: &mut [f32],
+    br: &mut BitCache,
+    codebook: &[i16],
+    linbits: i32,
+    one: f32,
+) {
+    for pair in out.chunks_exact_mut(2) {
+        let mut w = 5;
+        let mut leaf = i32::from(codebook[br.peek(w) as usize]);
+        while leaf < 0 {
+            br.flush(w);
+            w = leaf & 7;
+            leaf = i32::from(codebook[br.peek(w).wrapping_sub((leaf >> 3) as u32) as usize]);
+        }
+        br.flush(leaf >> 8);
+
+        for v in pair {
+            let mut lsb = leaf & 0x0F;
+            if LINBITS && lsb == 15 {
+                lsb += br.peek(linbits) as i32;
+                br.flush(linbits);
+                br.check();
+                *v = one * l3_pow_43(lsb) * if (br.cache as i32) < 0 { -1.0 } else { 1.0 };
+            } else {
+                *v = G_POW43[(16 + lsb) as usize - 16 * (br.cache >> 31) as usize] * one;
+            }
+            br.flush((lsb != 0) as i32);
+            leaf >>= 4;
+        }
+        br.check();
+    }
+}
+
 fn l3_huffman(dst: &mut [f32; 576], bs: &mut Bs, gr_info: &GrInfo, scf: &[f32; 40], layer3gr_limit: i32) {
     let mut one = 0.0f32;
     let mut ireg = 0;
@@ -588,39 +624,18 @@ fn l3_huffman(dst: &mut [f32; 576], bs: &mut Bs, gr_info: &GrInfo, scf: &[f32; 4
         loop {
             let np = i32::from(sfbtab[sfb]) / 2;
             sfb += 1;
-            let mut pairs_to_decode = big_val_cnt.min(np);
+            let pairs_to_decode = big_val_cnt.min(np) as usize;
             one = scf[scf_idx];
             scf_idx += 1;
-            loop {
-                let mut w = 5;
-                let mut leaf = i32::from(codebook[br.peek(w) as usize]);
-                while leaf < 0 {
-                    br.flush(w);
-                    w = leaf & 7;
-                    leaf = i32::from(codebook[br.peek(w).wrapping_sub((leaf >> 3) as u32) as usize]);
-                }
-                br.flush(leaf >> 8);
-
-                for _ in 0..2 {
-                    let mut lsb = leaf & 0x0F;
-                    if lsb == 15 && linbits != 0 {
-                        lsb += br.peek(linbits) as i32;
-                        br.flush(linbits);
-                        br.check();
-                        dst[d] = one * l3_pow_43(lsb) * if (br.cache as i32) < 0 { -1.0 } else { 1.0 };
-                    } else {
-                        dst[d] = G_POW43[(16 + lsb) as usize - 16 * (br.cache >> 31) as usize] * one;
-                    }
-                    br.flush((lsb != 0) as i32);
-                    d += 1;
-                    leaf >>= 4;
-                }
-                br.check();
-                pairs_to_decode -= 1;
-                if pairs_to_decode == 0 {
-                    break;
-                }
+            // C's do/while always decodes at least one pair; np is never 0 here
+            // because big_values <= 288 and every table covers 288 pairs.
+            let out = &mut dst[d..d + 2 * pairs_to_decode.max(1)];
+            if linbits != 0 {
+                l3_huffman_pairs::<true>(out, &mut br, codebook, linbits, one);
+            } else {
+                l3_huffman_pairs::<false>(out, &mut br, codebook, linbits, one);
             }
+            d += out.len();
             big_val_cnt -= np;
             if big_val_cnt <= 0 {
                 break;
