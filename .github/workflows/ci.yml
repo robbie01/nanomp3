@@ -22,7 +22,7 @@ jobs:
           submodules: true
       - run: rustup update stable && rustup default stable
       - name: Unit tests
-        run: cargo test -p nanomp3
+        run: cargo test -p nanomp3-core -p nanomp3
       - name: Bit-exact parity with minimp3 (every feature combination)
         shell: bash
         run: |
@@ -41,7 +41,8 @@ jobs:
           submodules: true
       - run: rustup update stable && rustup default stable
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo clippy -p nanomp3 --no-default-features -- -D warnings
+      - run: cargo clippy -p nanomp3-core -p nanomp3 --no-default-features -- -D warnings
+      - run: cargo clippy -p nanomp3 --no-default-features --features alloc -- -D warnings
 
   no_std:
     name: no_std + MSRV
@@ -49,8 +50,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install 1.89 --profile minimal --target thumbv7em-none-eabihf,riscv32imac-unknown-none-elf
-      - run: cargo +1.89 build -p nanomp3 --target thumbv7em-none-eabihf
-      - run: cargo +1.89 build -p nanomp3 --target riscv32imac-unknown-none-elf --no-default-features
+      - run: cargo +1.89 build -p nanomp3-core --target thumbv7em-none-eabihf
+      - run: cargo +1.89 build -p nanomp3-core --target riscv32imac-unknown-none-elf --no-default-features
+      - run: cargo +1.89 build -p nanomp3 --target thumbv7em-none-eabihf --no-default-features --features alloc,wide,layer12
 
   miri:
     name: Miri
@@ -58,7 +60,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install nightly --component miri && rustup default nightly
-      - run: cargo miri test -p nanomp3
+      - run: cargo miri test -p nanomp3-core -p nanomp3
 
   fuzz:
     name: Fuzz smoke test

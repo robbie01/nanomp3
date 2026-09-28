@@ -1,0 +1,33 @@
+[package]
+name = "nanomp3"
+description = "Pure Rust MP3 decoder with sample-accurate seeking, gapless playback and tag skipping. no_std. Based on minimp3"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "../README.md"
+documentation = "https://docs.rs/nanomp3"
+categories = ["multimedia", "multimedia::audio", "multimedia::encoding", "no-std"]
+keywords = ["audio", "codec", "decoder", "mp3", "mpeg"]
+
+[features]
+default = ["std", "wide", "layer12"]
+# The sample-accurate reader over byte slices, and decoding a whole buffer.
+alloc = []
+# The reader over `std::io::Read + Seek`.
+std = ["alloc"]
+wide = ["nanomp3-core/wide"]
+layer12 = ["nanomp3-core/layer12"]
+
+[dependencies]
+# Pinned exactly: nanomp3 uses nanomp3-core's unstable internals.
+nanomp3-core = { version = "=0.2.0", path = "../nanomp3-core", default-features = false }
+
+[dev-dependencies]
+byteorder = "1.5"
+
+[[example]]
+name = "measure"
+required-features = ["std"]

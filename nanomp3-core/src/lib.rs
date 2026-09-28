@@ -5,6 +5,30 @@ mod minimp3;
 
 pub use minimp3::Sample;
 
+#[doc(hidden)]
+pub mod __private {
+    //! Internals shared with the `nanomp3` crate, which pins an exact version
+    //! of this one. Not public API: no semver guarantees.
+    pub use crate::minimp3::{l3_side_info, mp3d_find_frame as find_frame, FrameInfo, Header};
+    use crate::{minimp3, Decoder, Sample};
+
+    /// `mp3dec_decode_frame` with C's `info` semantics: when no frame is
+    /// found, only `frame_bytes` is written.
+    pub fn decode_frame<S: Sample>(
+        dec: &mut Decoder,
+        mp3: &[u8],
+        pcm: Option<&mut [S]>,
+        info: &mut FrameInfo,
+    ) -> usize {
+        minimp3::mp3dec_decode_frame(&mut dec.dec, mp3, pcm, info, dec.minimp3_compat)
+    }
+
+    /// `mp3dec_init`.
+    pub fn init(dec: &mut Decoder) {
+        minimp3::mp3dec_init(&mut dec.dec);
+    }
+}
+
 #[cfg(test)]
 mod tests;
 

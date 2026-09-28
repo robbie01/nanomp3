@@ -8,7 +8,7 @@ fn inputs() -> Vec<(String, Vec<u8>)> {
         .map(|p| (p.file_name().unwrap().to_string_lossy().into_owned(), std::fs::read(&p).unwrap()))
         .collect();
     v.sort();
-    let march = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/tests/The Washington Post.mp3");
+    let march = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../nanomp3-core/src/tests/The Washington Post.mp3");
     v.push(("The Washington Post.mp3".into(), std::fs::read(march).unwrap()));
     v
 }

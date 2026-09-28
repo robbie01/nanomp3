@@ -6,7 +6,7 @@ fn inputs() -> Vec<(&'static str, Vec<u8>)> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     vec![
         // Real music: MPEG-1, 48 kHz, joint stereo, 320 kbps.
-        ("march_320k_stereo", std::fs::read(root.join("../src/tests/The Washington Post.mp3")).unwrap()),
+        ("march_320k_stereo", std::fs::read(root.join("../nanomp3-core/src/tests/The Washington Post.mp3")).unwrap()),
         // MPEG-2 LSF, 22.05 kHz, all bitrates.
         ("lsf_22k", std::fs::read(root.join("minimp3/vectors/M2L3_bitrate_22_all.bit")).unwrap()),
         // Mono, short blocks, intensity stereo mix.

@@ -273,13 +273,13 @@ impl<'a> Bs<'a> {
 
 /// A 4-byte frame header.
 #[derive(Copy, Clone)]
-struct Header([u8; 4]);
+pub struct Header(pub [u8; 4]);
 
 impl Header {
-    fn read(buf: &[u8]) -> Self {
+    pub fn read(buf: &[u8]) -> Self {
         Self([buf[0], buf[1], buf[2], buf[3]])
     }
-    fn is_mono(self) -> bool {
+    pub fn is_mono(self) -> bool {
         self.0[3] & 0xC0 == 0xC0
     }
     fn is_ms_stereo(self) -> bool {
@@ -288,7 +288,7 @@ impl Header {
     fn is_free_format(self) -> bool {
         self.0[2] & 0xF0 == 0
     }
-    fn is_crc(self) -> bool {
+    pub fn is_crc(self) -> bool {
         self.0[1] & 1 == 0
     }
     fn test_padding(self) -> bool {
@@ -306,7 +306,7 @@ impl Header {
     fn test_ms_stereo(self) -> bool {
         self.0[3] & 0x20 != 0
     }
-    fn get_layer(self) -> u8 {
+    pub fn get_layer(self) -> u8 {
         (self.0[1] >> 1) & 3
     }
     fn get_bitrate(self) -> u8 {
@@ -326,7 +326,7 @@ impl Header {
         self.0[1] & 6 == 6
     }
 
-    fn valid(self) -> bool {
+    pub fn valid(self) -> bool {
         let h = self.0;
         h[0] == 0xff
             && (h[1] & 0xF0 == 0xf0 || h[1] & 0xFE == 0xe2)
@@ -336,7 +336,7 @@ impl Header {
     }
 
     /// `hdr_compare(self, other)`: is `other` a valid header for the same stream?
-    fn compare(self, other: Header) -> bool {
+    pub fn compare(self, other: Header) -> bool {
         let (h1, h2) = (self.0, other.0);
         other.valid()
             && (h1[1] ^ h2[1]) & 0xFE == 0
@@ -344,20 +344,20 @@ impl Header {
             && self.is_free_format() == other.is_free_format()
     }
 
-    fn bitrate_kbps(self) -> u32 {
+    pub fn bitrate_kbps(self) -> u32 {
         2 * u32::from(
             HDR_BITRATE_KBPS_HALFRATE[self.test_mpeg1() as usize][self.get_layer() as usize - 1]
                 [self.get_bitrate() as usize],
         )
     }
 
-    fn sample_rate_hz(self) -> u32 {
+    pub fn sample_rate_hz(self) -> u32 {
         HDR_SAMPLE_RATE_HZ_G_HZ[self.get_sample_rate() as usize]
             >> !self.test_mpeg1() as u32
             >> !self.test_not_mpeg25() as u32
     }
 
-    fn frame_samples(self) -> u32 {
+    pub fn frame_samples(self) -> u32 {
         if self.is_layer_1() {
             384
         } else {
@@ -365,7 +365,7 @@ impl Header {
         }
     }
 
-    fn frame_bytes(self, free_format_size: usize) -> usize {
+    pub fn frame_bytes(self, free_format_size: usize) -> usize {
         let mut frame_bytes =
             (self.frame_samples() * self.bitrate_kbps() * 125 / self.sample_rate_hz()) as usize;
         if self.is_layer_1() {
@@ -378,7 +378,7 @@ impl Header {
         }
     }
 
-    fn padding(self) -> usize {
+    pub fn padding(self) -> usize {
         if self.test_padding() {
             if self.is_layer_1() {
                 4
@@ -1347,7 +1347,7 @@ fn mp3d_match_frame(hdr: &[u8], frame_bytes: usize) -> bool {
 }
 
 /// Returns `(offset, frame_bytes)`; `frame_bytes` is 0 when no frame was found.
-fn mp3d_find_frame(mp3: &[u8], free_format_bytes: &mut usize) -> (usize, usize) {
+pub fn mp3d_find_frame(mp3: &[u8], free_format_bytes: &mut usize) -> (usize, usize) {
     let mp3_bytes = mp3.len();
     let mut i = 0;
     while i + HDR_SIZE < mp3_bytes {
@@ -1382,6 +1382,28 @@ fn mp3d_find_frame(mp3: &[u8], free_format_bytes: &mut usize) -> (usize, usize) 
         i += 1;
     }
     (mp3_bytes, 0)
+}
+
+/// `mp3dec_init`: forces a full resynchronization (and state reset) on the
+/// next decode.
+pub fn mp3dec_init(dec: &mut Mp3Dec) {
+    dec.st.header[0] = 0;
+}
+
+/// Parses the Layer III side info of `frame` (header included) as a frame of
+/// `frame_size` bytes, like minimp3_ex does for VBR tags and seeking. Returns
+/// the bit reader's `(pos, limit)` afterwards, relative to the end of the
+/// header, or `None` if the side info is invalid.
+pub fn l3_side_info(frame: &[u8], frame_size: usize) -> Option<(i32, i32)> {
+    let hdr = Header::read(frame);
+    let body = &frame[HDR_SIZE..];
+    // C trusts frame_size; clamp it so a truncated frame can't be over-read.
+    let mut bs = Bs::new(body, (frame_size as i32 - HDR_SIZE as i32).min(body.len() as i32));
+    if hdr.is_crc() {
+        bs.get_bits(16);
+    }
+    let mut gr_info = [GrInfo::default(); 4];
+    (l3_read_side_info(&mut bs, &mut gr_info, hdr) >= 0).then_some((bs.pos, bs.limit))
 }
 
 /// `mp3dec_decode_frame`. With `pcm == None`, only parses the frame header and

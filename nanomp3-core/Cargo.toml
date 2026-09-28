@@ -1,0 +1,25 @@
+[package]
+name = "nanomp3-core"
+description = "The no_std, allocation-free MPEG audio decoder behind nanomp3 (a bit-exact, safe Rust port of minimp3)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+documentation = "https://docs.rs/nanomp3-core"
+categories = ["multimedia", "multimedia::audio", "multimedia::encoding", "no-std", "no-std::no-alloc"]
+keywords = ["audio", "codec", "decoder", "mp3", "mpeg"]
+
+[features]
+default = ["wide", "layer12"]
+# Use the `wide` crate for explicit SIMD. Without it, the same kernels are
+# written over plain arrays and left to LLVM's auto-vectorizer.
+wide = ["dep:wide"]
+# Decode MPEG Layer I and II frames too (MP1/MP2). Without it, such frames are
+# skipped like upstream built with MINIMP3_ONLY_MP3.
+layer12 = []
+
+[dependencies]
+wide = { version = "1", default-features = false, optional = true }

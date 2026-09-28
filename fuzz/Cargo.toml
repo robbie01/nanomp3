@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-nanomp3 = { path = ".." }
+nanomp3 = { path = "../nanomp3" }
 nanomp3-parity = { path = "../parity" }
 
 [[bin]]
