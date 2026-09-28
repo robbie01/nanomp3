@@ -7,8 +7,8 @@ fn main() {
         let p = e.unwrap().path();
         if p.extension().is_none_or(|e| e != "bit") { continue; }
         let data = std::fs::read(&p).unwrap();
-        let a = decode_c(&data, Feed::Whole, Flavor::Scalar);
-        let b = decode_c(&data, Feed::Whole, Flavor::Simd);
+        let a = decode_c::<f32>(&data, Feed::Whole, Flavor::Mp3F32);
+        let b = decode_c::<f32>(&data, Feed::Whole, Flavor::SimdF32);
         match first_difference(&a, &b) {
             None => same += 1,
             Some(d) => differ.push(format!("{}: {d}", p.file_name().unwrap().to_string_lossy())),

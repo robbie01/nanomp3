@@ -2,7 +2,7 @@
 //! nanomp3 must match bit for bit. This crate is never published; `unsafe`
 //! here is confined to the FFI boundary.
 
-use std::os::raw::{c_int, c_ulong};
+use std::os::raw::{c_int, c_ulong, c_void};
 
 #[repr(C)]
 struct Mp3Dec {
@@ -25,76 +25,116 @@ pub struct FrameInfo {
     pub bitrate_kbps: c_int,
 }
 
-type DecodeFn =
-    unsafe extern "C" fn(*mut Mp3Dec, *const u8, c_int, *mut f32, *mut FrameInfo) -> c_int;
+type InitFn = unsafe extern "C" fn(*mut Mp3Dec);
+type DecodeFn = unsafe extern "C" fn(*mut Mp3Dec, *const u8, c_int, *mut c_void, *mut FrameInfo) -> c_int;
+type SizeofFn = unsafe extern "C" fn() -> c_ulong;
 
-extern "C" {
-    fn mp3dec_init_scalar(dec: *mut Mp3Dec);
-    fn mp3dec_decode_frame_scalar(
-        dec: *mut Mp3Dec,
-        mp3: *const u8,
-        mp3_bytes: c_int,
-        pcm: *mut f32,
-        info: *mut FrameInfo,
-    ) -> c_int;
-    fn mp3dec_sizeof_scalar() -> c_ulong;
-
-    fn mp3dec_init_simd(dec: *mut Mp3Dec);
-    fn mp3dec_decode_frame_simd(
-        dec: *mut Mp3Dec,
-        mp3: *const u8,
-        mp3_bytes: c_int,
-        pcm: *mut f32,
-        info: *mut FrameInfo,
-    ) -> c_int;
-    fn mp3dec_sizeof_simd() -> c_ulong;
+macro_rules! builds {
+    ($($variant:ident => $init:ident, $decode:ident, $size:ident;)*) => {
+        extern "C" {
+            $(
+                fn $init(dec: *mut Mp3Dec);
+                fn $decode(dec: *mut Mp3Dec, mp3: *const u8, len: c_int, pcm: *mut c_void, info: *mut FrameInfo) -> c_int;
+                fn $size() -> c_ulong;
+            )*
+        }
+        impl Flavor {
+            fn fns(self) -> (InitFn, DecodeFn, SizeofFn) {
+                match self { $(Flavor::$variant => ($init, $decode, $size),)* }
+            }
+        }
+    };
 }
 
-/// Which build of upstream minimp3 to use.
+/// A build of upstream minimp3 (see `build.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flavor {
-    /// `MINIMP3_NO_SIMD`: the exact configuration nanomp3 was translated from.
-    Scalar,
-    /// Upstream defaults (SSE2/NEON intrinsics). Not bit-exact; used for speed.
-    Simd,
+    /// `MINIMP3_ONLY_MP3`, float output, no SIMD.
+    Mp3F32,
+    /// `MINIMP3_ONLY_MP3`, int16 output, no SIMD.
+    Mp3S16,
+    /// Layers I-III, float output, no SIMD.
+    FullF32,
+    /// Layers I-III, int16 output, no SIMD.
+    FullS16,
+    /// `MINIMP3_ONLY_MP3`, float output, upstream SIMD. Not bit-exact; for speed.
+    SimdF32,
+}
+
+builds! {
+    Mp3F32 => mp3dec_init_mp3_f32, mp3dec_decode_frame_mp3_f32, mp3dec_sizeof_mp3_f32;
+    Mp3S16 => mp3dec_init_mp3_s16, mp3dec_decode_frame_mp3_s16, mp3dec_sizeof_mp3_s16;
+    FullF32 => mp3dec_init_full_f32, mp3dec_decode_frame_full_f32, mp3dec_sizeof_full_f32;
+    FullS16 => mp3dec_init_full_s16, mp3dec_decode_frame_full_s16, mp3dec_sizeof_full_s16;
+    SimdF32 => mp3dec_init_simd_f32, mp3dec_decode_frame_simd_f32, mp3dec_sizeof_simd_f32;
+}
+
+impl Flavor {
+    /// The bit-exact reference for nanomp3 as built (depends on `layer12`).
+    pub fn reference<S: PcmSample>() -> Self {
+        match (cfg!(feature = "layer12"), S::IS_I16) {
+            (false, false) => Flavor::Mp3F32,
+            (false, true) => Flavor::Mp3S16,
+            (true, false) => Flavor::FullF32,
+            (true, true) => Flavor::FullS16,
+        }
+    }
+
+    fn is_i16(self) -> bool {
+        matches!(self, Flavor::Mp3S16 | Flavor::FullS16)
+    }
+}
+
+/// Output sample types both decoders support.
+pub trait PcmSample: nanomp3::Sample + Default + std::fmt::Debug {
+    const IS_I16: bool;
+    fn bits(self) -> u32;
+}
+impl PcmSample for f32 {
+    const IS_I16: bool = false;
+    fn bits(self) -> u32 {
+        self.to_bits()
+    }
+}
+impl PcmSample for i16 {
+    const IS_I16: bool = true;
+    fn bits(self) -> u32 {
+        self as u16 as u32
+    }
 }
 
 /// A C minimp3 decoder instance.
 pub struct CDecoder {
     dec: Box<Mp3Dec>,
     decode: DecodeFn,
+    flavor: Flavor,
 }
 
 impl CDecoder {
     pub fn new(flavor: Flavor) -> Self {
+        let (init, decode, size) = flavor.fns();
         // SAFETY: Mp3Dec is plain-old-data; all-zero is its documented initial
         // state (mp3dec_init only clears header[0], which zeroing covers).
         let mut dec: Box<Mp3Dec> = unsafe { Box::new(std::mem::zeroed()) };
-        let (init, decode, size): (unsafe extern "C" fn(*mut Mp3Dec), DecodeFn, _) = match flavor {
-            Flavor::Scalar => (
-                mp3dec_init_scalar,
-                mp3dec_decode_frame_scalar,
-                unsafe { mp3dec_sizeof_scalar() },
-            ),
-            Flavor::Simd => (mp3dec_init_simd, mp3dec_decode_frame_simd, unsafe {
-                mp3dec_sizeof_simd()
-            }),
-        };
-        assert_eq!(size as usize, std::mem::size_of::<Mp3Dec>(), "mp3dec_t layout mismatch");
+        // SAFETY: plain C function with no preconditions.
+        assert_eq!(unsafe { size() } as usize, std::mem::size_of::<Mp3Dec>(), "mp3dec_t layout mismatch");
         // SAFETY: `dec` is a valid, exclusively owned mp3dec_t.
         unsafe { init(&mut *dec) };
-        Self { dec, decode }
+        Self { dec, decode, flavor }
     }
 
     /// Mirrors `mp3dec_decode_frame`. Returns (samples per channel, info).
-    pub fn decode(&mut self, mp3: &[u8], pcm: &mut [f32]) -> (usize, FrameInfo) {
+    pub fn decode<S: PcmSample>(&mut self, mp3: &[u8], pcm: &mut [S]) -> (usize, FrameInfo) {
+        assert_eq!(S::IS_I16, self.flavor.is_i16(), "sample type does not match {:?}", self.flavor);
         assert!(pcm.len() >= nanomp3::MAX_SAMPLES_PER_FRAME);
         let len = c_int::try_from(mp3.len()).expect("input too large for C API");
         let mut info = FrameInfo::default();
         // SAFETY: pointers are valid for the lengths passed, pcm holds at least
-        // MINIMP3_MAX_SAMPLES_PER_FRAME floats, and dec is exclusively borrowed.
-        let samples =
-            unsafe { (self.decode)(&mut *self.dec, mp3.as_ptr(), len, pcm.as_mut_ptr(), &mut info) };
+        // MINIMP3_MAX_SAMPLES_PER_FRAME samples of the build's sample type, and
+        // dec is exclusively borrowed.
+        let samples = unsafe {
+            (self.decode)(&mut *self.dec, mp3.as_ptr(), len, pcm.as_mut_ptr().cast(), &mut info)
+        };
         (samples as usize, info)
     }
 }
@@ -106,8 +146,8 @@ pub struct Frame {
     pub consumed: usize,
     /// (samples per channel, channels, hz, kbps) when audio was produced.
     pub info: Option<(usize, u8, u32, u32)>,
-    /// Interleaved PCM, only the produced part.
-    pub pcm: Vec<f32>,
+    /// Bit patterns of the interleaved PCM that was produced.
+    pub pcm: Vec<u32>,
 }
 
 /// How to present input to the decoder.
@@ -119,51 +159,46 @@ pub enum Feed {
     Window(usize),
 }
 
-fn run(mut input: &[u8], feed: Feed, mut step: impl FnMut(&[u8], &mut [f32]) -> Frame) -> Vec<Frame> {
-    let mut pcm = vec![0f32; nanomp3::MAX_SAMPLES_PER_FRAME];
+fn run<S: PcmSample>(
+    mut input: &[u8],
+    feed: Feed,
+    mut step: impl FnMut(&[u8], &mut [S]) -> (usize, Option<(usize, u8, u32, u32)>),
+) -> Vec<Frame> {
+    let mut pcm = vec![S::default(); nanomp3::MAX_SAMPLES_PER_FRAME];
     let mut frames = Vec::new();
     while !input.is_empty() {
         let view = match feed {
             Feed::Whole => input,
             Feed::Window(n) => &input[..input.len().min(n)],
         };
-        let frame = step(view, &mut pcm);
-        if frame.consumed == 0 {
+        let (consumed, info) = step(view, &mut pcm);
+        if consumed == 0 {
             break;
         }
-        input = &input[frame.consumed.min(input.len())..];
-        frames.push(frame);
+        let n = info.map_or(0, |(s, ch, _, _)| s * ch as usize);
+        frames.push(Frame { consumed, info, pcm: pcm[..n].iter().map(|s| s.bits()).collect() });
+        input = &input[consumed.min(input.len())..];
     }
     frames
 }
 
 /// Decode `input` with C minimp3.
-pub fn decode_c(input: &[u8], feed: Feed, flavor: Flavor) -> Vec<Frame> {
+pub fn decode_c<S: PcmSample>(input: &[u8], feed: Feed, flavor: Flavor) -> Vec<Frame> {
     let mut dec = CDecoder::new(flavor);
-    run(input, feed, |mp3, pcm| {
+    run::<S>(input, feed, |mp3, pcm| {
         let (samples, info) = dec.decode(mp3, pcm);
-        let info_out = (samples != 0).then_some({
-            (samples, info.channels as u8, info.hz as u32, info.bitrate_kbps as u32)
-        });
-        Frame {
-            consumed: info.frame_bytes as usize,
-            pcm: pcm[..samples * info.channels.max(0) as usize].to_vec(),
-            info: info_out,
-        }
+        let out = (samples != 0)
+            .then_some((samples, info.channels as u8, info.hz as u32, info.bitrate_kbps as u32));
+        (info.frame_bytes as usize, out)
     })
 }
 
 /// Decode `input` with nanomp3.
-pub fn decode_rust(input: &[u8], feed: Feed) -> Vec<Frame> {
+pub fn decode_rust<S: PcmSample>(input: &[u8], feed: Feed) -> Vec<Frame> {
     let mut dec = nanomp3::Decoder::new();
-    run(input, feed, |mp3, pcm| {
+    run::<S>(input, feed, |mp3, pcm| {
         let (consumed, info) = dec.decode(mp3, pcm);
-        let n = info.map_or(0, |i| i.samples_produced * i.channels.num() as usize);
-        Frame {
-            consumed,
-            info: info.map(|i| (i.samples_produced, i.channels.num(), i.sample_rate, i.bitrate)),
-            pcm: pcm[..n].to_vec(),
-        }
+        (consumed, info.map(|i| (i.samples_produced, i.channels.num(), i.sample_rate, i.bitrate)))
     })
 }
 
@@ -181,11 +216,8 @@ pub fn first_difference(c: &[Frame], r: &[Frame]) -> Option<String> {
                 a.consumed, a.info, b.consumed, b.info
             ));
         }
-        if let Some(i) = a.pcm.iter().zip(&b.pcm).position(|(x, y)| x.to_bits() != y.to_bits()) {
-            return Some(format!(
-                "frame {idx} sample {i}: C {:e} vs Rust {:e}",
-                a.pcm[i], b.pcm[i]
-            ));
+        if let Some(i) = a.pcm.iter().zip(&b.pcm).position(|(x, y)| x != y) {
+            return Some(format!("frame {idx} sample {i}: C {:#010x} vs Rust {:#010x}", a.pcm[i], b.pcm[i]));
         }
     }
     (c.len() != r.len()).then(|| format!("C produced {} calls, Rust {}", c.len(), r.len()))

@@ -53,12 +53,12 @@ fn bench(c: &mut Criterion) {
                 }))
             })
         });
-        for (label, flavor) in [("c_scalar", Flavor::Scalar), ("c_simd", Flavor::Simd)] {
+        for (label, flavor) in [("c_scalar", Flavor::Mp3F32), ("c_simd", Flavor::SimdF32)] {
             group.bench_with_input(BenchmarkId::new(label, name), &data, |b, data| {
                 b.iter(|| {
                     let mut dec = CDecoder::new(flavor);
                     black_box(decode_all!(dec, data, pcm, |d, m, p| {
-                        let (s, info) = d.decode(m, p);
+                        let (s, info) = d.decode::<f32>(m, p);
                         (info.frame_bytes as usize, s)
                     }))
                 })

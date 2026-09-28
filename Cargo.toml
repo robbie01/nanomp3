@@ -16,10 +16,13 @@ members = ["parity"]
 exclude = ["fuzz"]
 
 [features]
-default = ["wide"]
+default = ["wide", "layer12"]
 # Use the `wide` crate for explicit SIMD. Without it, the same kernels are
 # written over plain arrays and left to LLVM's auto-vectorizer.
 wide = ["dep:wide"]
+# Decode MPEG Layer I and II frames too (MP1/MP2). Without it, such frames are
+# skipped like upstream built with MINIMP3_ONLY_MP3.
+layer12 = []
 
 [dependencies]
 wide = { version = "1", default-features = false, optional = true }

@@ -9,8 +9,9 @@ description = "Bit-exact comparison of nanomp3 against upstream minimp3 (C)"
 nanomp3 = { path = "..", default-features = false }
 
 [features]
-default = ["wide"]
+default = ["wide", "layer12"]
 wide = ["nanomp3/wide"]
+layer12 = ["nanomp3/layer12"]
 
 [build-dependencies]
 cc = "1"

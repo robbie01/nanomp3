@@ -13,6 +13,8 @@
 #![allow(clippy::needless_range_loop)]
 
 mod lanes;
+#[cfg(feature = "layer12")]
+mod layer12;
 mod tables;
 use lanes::{Lanes, F4};
 use tables::*;
@@ -1350,6 +1352,9 @@ pub fn mp3dec_decode_frame<S: Sample>(
     }
 
     if info.layer != 3 {
+        #[cfg(feature = "layer12")]
+        return layer12::decode_frame(dec, scratch, hdr, &mut bs_frame, pcm, info.channels as usize);
+        #[cfg(not(feature = "layer12"))]
         return 0;
     }
 

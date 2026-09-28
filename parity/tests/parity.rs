@@ -13,12 +13,12 @@ fn inputs() -> Vec<(String, Vec<u8>)> {
     v
 }
 
-fn check(feed: Feed) {
+fn check<S: PcmSample>(feed: Feed) {
     let mut failures = Vec::new();
     let mut frames = 0;
     for (name, data) in inputs() {
-        let c = decode_c(&data, feed, Flavor::Scalar);
-        let r = std::panic::catch_unwind(|| decode_rust(&data, feed));
+        let c = decode_c::<S>(&data, feed, Flavor::reference::<S>());
+        let r = std::panic::catch_unwind(|| decode_rust::<S>(&data, feed));
         match r {
             Err(_) => failures.push(format!("{name}: nanomp3 panicked")),
             Ok(r) => {
@@ -35,16 +35,26 @@ fn check(feed: Feed) {
 
 #[test]
 fn bit_exact_whole_buffer() {
-    check(Feed::Whole);
+    check::<f32>(Feed::Whole);
 }
 
 #[test]
 fn bit_exact_16k_window() {
-    check(Feed::Window(16 * 1024));
+    check::<f32>(Feed::Window(16 * 1024));
 }
 
 #[test]
 fn bit_exact_tiny_window() {
     // Smaller than a frame: exercises resync and the "not enough data" paths.
-    check(Feed::Window(700));
+    check::<f32>(Feed::Window(700));
+}
+
+#[test]
+fn bit_exact_i16_whole_buffer() {
+    check::<i16>(Feed::Whole);
+}
+
+#[test]
+fn bit_exact_i16_tiny_window() {
+    check::<i16>(Feed::Window(700));
 }
