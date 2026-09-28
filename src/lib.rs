@@ -16,7 +16,10 @@ pub const MAX_SAMPLES_PER_FRAME: usize = 1152*2;
 /// The decoder is about 22 KiB: it holds the filterbank state between frames
 /// and the working memory for decoding one. Nothing is allocated.
 #[derive(Clone)]
-pub struct Decoder(minimp3::Mp3Dec);
+pub struct Decoder {
+    dec: minimp3::Mp3Dec,
+    minimp3_compat: bool,
+}
 
 
 /// The channel formats that may be encoded in an MP3 frame.
@@ -49,15 +52,23 @@ pub struct FrameInfo {
 impl Decoder {
     /// Instantiates a `Decoder`.
     pub const fn new() -> Self {
-        Self(minimp3::Mp3Dec::new())
+        Self { dec: minimp3::Mp3Dec::new(), minimp3_compat: false }
+    }
+
+    /// Instantiates a `Decoder` whose output is bit-identical to minimp3's,
+    /// including quirks nanomp3 otherwise corrects. Currently that only
+    /// affects `i16` output, where minimp3 rounds samples in (−1.5, −0.5] to
+    /// 0 instead of −1 (see [`Sample`]).
+    pub const fn new_minimp3_compat() -> Self {
+        Self { dec: minimp3::Mp3Dec::new(), minimp3_compat: true }
     }
 
     /// Decode MP3 data into a buffer, returning the amount of MP3 data consumed and info about decoded samples.
     /// `mp3` should contain at least several frames worth of data at any given time (16KiB recommended) to avoid artifacting.
     ///
     /// Samples are interleaved. `pcm` can hold `f32` samples (nominally in
-    /// `[-1.0, 1.0]`, not clipped) or `i16` samples (rounded and clipped the
-    /// same way minimp3 does), which halves the buffer size.
+    /// `[-1.0, 1.0]`, not clipped) or signed or unsigned 8-, 16- or 32-bit
+    /// integers; see [`Sample`] for the conversions.
     ///
     /// When no audio is produced (`None`), the consumed bytes were skipped: tags
     /// or garbage before a frame, a frame whose bit reservoir isn't available
@@ -70,7 +81,7 @@ impl Decoder {
         assert!(pcm.len() >= MAX_SAMPLES_PER_FRAME, "pcm buffer too small");
 
         let mut info = minimp3::FrameInfo::default();
-        let samples = minimp3::mp3dec_decode_frame(&mut self.0, mp3, Some(pcm), &mut info);
+        let samples = minimp3::mp3dec_decode_frame(&mut self.dec, mp3, Some(pcm), &mut info, self.minimp3_compat);
 
         (
             info.frame_bytes,

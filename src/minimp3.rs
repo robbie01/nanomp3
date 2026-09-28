@@ -29,37 +29,116 @@ const STOP_BLOCK_TYPE: u8 = 3;
 /// `MAX_SCFI` in C: `(255 + BITS_DEQUANTIZER_OUT*4 - 210 + 3) & ~3` with `BITS_DEQUANTIZER_OUT = -1`.
 const MAX_SCFI: i32 = (255 - 4 - 210 + 3) & !3;
 
-/// A PCM output sample format.
+/// A PCM output sample format: `f32`, `i8`, `u8`, `i16`, `u16`, `i32` or `u32`.
+///
+/// The decoder synthesizes floating-point samples at 16-bit scale (full scale
+/// is ±32768) and converts them as follows:
+///
+/// | type | conversion |
+/// |---|---|
+/// | `f32` | divided by 32768, so nominally in `[-1.0, 1.0]`; not clipped |
+/// | `i16` | rounded half away from zero and clipped |
+/// | `i8` | divided by 256, rounded half away from zero and clipped |
+/// | `i32` | multiplied by 65536, rounded half away from zero and clipped |
+/// | `u8`, `u16`, `u32` | as the signed type, offset by half the range (sign bit flipped) |
+///
+/// Integer formats carry at most about 24 significant bits, since that's the
+/// precision of the synthesis.
+///
+/// With [`Decoder::new_minimp3_compat`](crate::Decoder::new_minimp3_compat),
+/// `i16` uses minimp3's exact rounding instead, which maps samples in
+/// (−1.5, −0.5] to 0 rather than −1. `f32` output is identical to minimp3's
+/// either way; the other formats have no minimp3 counterpart.
 pub trait Sample: Copy + sealed::Sealed {
     #[doc(hidden)]
-    fn scale_pcm(sample: f32) -> Self;
+    fn from_synth(x: f32, minimp3_compat: bool) -> Self;
 }
 
 mod sealed {
     pub trait Sealed {}
     impl Sealed for f32 {}
+    impl Sealed for i8 {}
+    impl Sealed for u8 {}
     impl Sealed for i16 {}
+    impl Sealed for u16 {}
+    impl Sealed for i32 {}
+    impl Sealed for u32 {}
+}
+
+/// Rounds half away from zero, saturating to the `i32` range (NaN becomes 0).
+/// `f32::round` isn't available in `core`, and the usual `(x + 0.5) as i32`
+/// misrounds 0.49999997 (the sum rounds up to 1.0).
+#[inline(always)]
+fn round_i32(x: f32) -> i32 {
+    let t = x as i32; // truncates toward zero and saturates
+    let frac = x - t as f32; // exact: |x| < 2^24 or x is integral
+    if frac >= 0.5 {
+        t.saturating_add(1)
+    } else if frac <= -0.5 {
+        t.saturating_sub(1)
+    } else {
+        t
+    }
 }
 
 impl Sample for f32 {
     #[inline(always)]
-    fn scale_pcm(sample: f32) -> f32 {
-        sample * (1.0 / 32768.0)
+    fn from_synth(x: f32, _: bool) -> f32 {
+        x * (1.0 / 32768.0)
     }
 }
 
 impl Sample for i16 {
     #[inline(always)]
-    fn scale_pcm(sample: f32) -> i16 {
-        if sample >= 32766.5 {
-            return 32767;
+    fn from_synth(x: f32, minimp3_compat: bool) -> i16 {
+        if minimp3_compat {
+            // minimp3's mp3d_scale_pcm, quirk included.
+            if x >= 32766.5 {
+                return 32767;
+            }
+            if x <= -32767.5 {
+                return -32768;
+            }
+            let s = (x + 0.5) as i16;
+            s - (s < 0) as i16
+        } else {
+            round_i32(x).clamp(i16::MIN.into(), i16::MAX.into()) as i16
         }
-        if sample <= -32767.5 {
-            return -32768;
-        }
-        let s = (sample + 0.5) as i16;
-        // Round away from zero, to be compliant.
-        s - (s < 0) as i16
+    }
+}
+
+impl Sample for i8 {
+    #[inline(always)]
+    fn from_synth(x: f32, _: bool) -> i8 {
+        round_i32(x * (1.0 / 256.0)).clamp(i8::MIN.into(), i8::MAX.into()) as i8
+    }
+}
+
+impl Sample for i32 {
+    #[inline(always)]
+    fn from_synth(x: f32, _: bool) -> i32 {
+        round_i32(x * 65536.0)
+    }
+}
+
+impl Sample for u8 {
+    #[inline(always)]
+    fn from_synth(x: f32, c: bool) -> u8 {
+        i8::from_synth(x, c) as u8 ^ 0x80
+    }
+}
+
+impl Sample for u16 {
+    #[inline(always)]
+    fn from_synth(x: f32, _: bool) -> u16 {
+        i16::from_synth(x, false) as u16 ^ 0x8000
+    }
+}
+
+impl Sample for u32 {
+    #[inline(always)]
+    fn from_synth(x: f32, c: bool) -> u32 {
+        i32::from_synth(x, c) as u32 ^ 0x8000_0000
     }
 }
 
@@ -1131,6 +1210,7 @@ fn mp3d_synth<S: Sample, const NCH: usize>(
     xr: &[f32],
     dst: &mut [S],
     lins: &mut [[f32; 4]; SYNTH_ROWS],
+    compat: bool,
 ) {
     let xl: &[f32; 560] = xl[..560].try_into().unwrap();
     let xr: &[f32; 560] = xr[..560].try_into().unwrap();
@@ -1144,8 +1224,8 @@ fn mp3d_synth<S: Sample, const NCH: usize>(
     // overwrites them with the left ones; skipping them gives identical output.
     let mut pair = |at: usize, row: usize, lane: usize| {
         let (a, b) = mp3d_synth_pair(lins, row, lane);
-        dst[at] = S::scale_pcm(a);
-        dst[at + 16 * NCH] = S::scale_pcm(b);
+        dst[at] = S::from_synth(a, compat);
+        dst[at + 16 * NCH] = S::from_synth(b, compat);
     };
     if NCH == 2 {
         pair(r, 15, 1);
@@ -1180,17 +1260,17 @@ fn mp3d_synth<S: Sample, const NCH: usize>(
         let (a, b) = (a.to_array(), b.to_array());
 
         if NCH == 2 {
-            dst[r + (15 - i) * NCH] = S::scale_pcm(a[1]);
-            dst[r + (17 + i) * NCH] = S::scale_pcm(b[1]);
+            dst[r + (15 - i) * NCH] = S::from_synth(a[1], compat);
+            dst[r + (17 + i) * NCH] = S::from_synth(b[1], compat);
         }
-        dst[(15 - i) * NCH] = S::scale_pcm(a[0]);
-        dst[(17 + i) * NCH] = S::scale_pcm(b[0]);
+        dst[(15 - i) * NCH] = S::from_synth(a[0], compat);
+        dst[(17 + i) * NCH] = S::from_synth(b[0], compat);
         if NCH == 2 {
-            dst[r + (47 - i) * NCH] = S::scale_pcm(a[3]);
-            dst[r + (49 + i) * NCH] = S::scale_pcm(b[3]);
+            dst[r + (47 - i) * NCH] = S::from_synth(a[3], compat);
+            dst[r + (49 + i) * NCH] = S::from_synth(b[3], compat);
         }
-        dst[(47 - i) * NCH] = S::scale_pcm(a[2]);
-        dst[(49 + i) * NCH] = S::scale_pcm(b[2]);
+        dst[(47 - i) * NCH] = S::from_synth(a[2], compat);
+        dst[(49 + i) * NCH] = S::from_synth(b[2], compat);
     }
 }
 
@@ -1199,6 +1279,7 @@ fn mp3d_synth_all<S: Sample, const NCH: usize>(
     nbands: usize,
     pcm: &mut [S],
     lins: &mut [[f32; 4]; SYN_ROWS],
+    compat: bool,
 ) {
     for i in (0..nbands).step_by(2) {
         mp3d_synth::<S, NCH>(
@@ -1206,6 +1287,7 @@ fn mp3d_synth_all<S: Sample, const NCH: usize>(
             &grbuf[576 * (NCH - 1) + i..],
             &mut pcm[32 * NCH * i..],
             (&mut lins[16 * i..16 * i + SYNTH_ROWS]).try_into().unwrap(),
+            compat,
         );
     }
 }
@@ -1220,6 +1302,7 @@ fn mp3d_synth_granule<S: Sample>(
     nch: usize,
     pcm: &mut [S],
     lins: &mut [[f32; 4]; SYN_ROWS],
+    compat: bool,
 ) {
     for ch in &mut grbuf[..nch] {
         mp3d_dct_ii(ch, nbands);
@@ -1229,9 +1312,9 @@ fn mp3d_synth_granule<S: Sample>(
 
     let grbuf = grbuf.as_flattened();
     if nch == 1 {
-        mp3d_synth_all::<S, 1>(grbuf, nbands, pcm, lins);
+        mp3d_synth_all::<S, 1>(grbuf, nbands, pcm, lins, compat);
     } else {
-        mp3d_synth_all::<S, 2>(grbuf, nbands, pcm, lins);
+        mp3d_synth_all::<S, 2>(grbuf, nbands, pcm, lins, compat);
     }
 
     let tail = &lins.as_flattened()[nbands * 64..nbands * 64 + 15 * 64];
@@ -1303,11 +1386,13 @@ fn mp3d_find_frame(mp3: &[u8], free_format_bytes: &mut usize) -> (usize, usize) 
 
 /// `mp3dec_decode_frame`. With `pcm == None`, only parses the frame header and
 /// returns the number of samples the frame would produce (per channel).
+/// `compat` selects minimp3's exact sample conversion (see [`Sample`]).
 pub fn mp3dec_decode_frame<S: Sample>(
     dec: &mut Mp3Dec,
     mp3: &[u8],
     pcm: Option<&mut [S]>,
     info: &mut FrameInfo,
+    compat: bool,
 ) -> usize {
     let Mp3Dec { st: dec, scratch, maindata } = dec;
     let mp3_bytes = mp3.len();
@@ -1353,7 +1438,7 @@ pub fn mp3dec_decode_frame<S: Sample>(
 
     if info.layer != 3 {
         #[cfg(feature = "layer12")]
-        return layer12::decode_frame(dec, scratch, hdr, &mut bs_frame, pcm, info.channels as usize);
+        return layer12::decode_frame(dec, scratch, hdr, &mut bs_frame, pcm, info.channels as usize, compat);
         #[cfg(not(feature = "layer12"))]
         return 0;
     }
@@ -1376,7 +1461,7 @@ pub fn mp3dec_decode_frame<S: Sample>(
         for (igr, pcm) in pcm.chunks_exact_mut(576 * nch).take(granules).enumerate() {
             scratch.grbuf = [[0.; 576]; 2];
             l3_decode(dec, scratch, &mut bs, &gr_info[igr * nch..], nch);
-            mp3d_synth_granule(&mut dec.qmf_state, &mut scratch.grbuf, 18, nch, pcm, &mut scratch.syn);
+            mp3d_synth_granule(&mut dec.qmf_state, &mut scratch.grbuf, 18, nch, pcm, &mut scratch.syn, compat);
         }
     }
     l3_save_reservoir(dec, &bs);

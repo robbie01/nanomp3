@@ -4,12 +4,13 @@ A pure Rust MPEG audio decoder (MP3, plus MP1/MP2) based on [minimp3](https://gi
 
 - **`no_std`, no allocation.** The decoder is a single ~22 KiB struct.
 - **No `unsafe`.** The crate is `#![forbid(unsafe_code)]`.
-- **Bit-exact with minimp3.** Output is identical, bit for bit, to upstream's reference (scalar) build on every one of its conformance vectors, for both `f32` and `i16` output. CI checks this on x86-64 and ARM64.
+- **Bit-exact with minimp3.** Output is identical, bit for bit, to upstream's reference (scalar) build on every one of its conformance vectors. CI checks this on x86-64 and ARM64. (One known minimp3 bug is fixed by default and available as an opt-in; see below.)
+- **Flexible output.** Interleaved `f32`, `i8`, `u8`, `i16`, `u16`, `i32` or `u32` samples.
 - **Faster than minimp3.** SIMD kernels (via [`wide`](https://crates.io/crates/wide)) are written so each lane does exactly the scalar arithmetic, so the speedup doesn't cost bit-exactness. Upstream's own SIMD build doesn't manage that.
 
 ```rust
 let mut decoder = nanomp3::Decoder::new();
-let mut pcm = [0f32; nanomp3::MAX_SAMPLES_PER_FRAME]; // or [0i16; ...]
+let mut pcm = [0f32; nanomp3::MAX_SAMPLES_PER_FRAME]; // or i16, u8, i32, ...
 let mut mp3: &[u8] = &data;
 while !mp3.is_empty() {
     let (consumed, info) = decoder.decode(mp3, &mut pcm);
@@ -22,6 +23,10 @@ while !mp3.is_empty() {
 ```
 
 ⚠️ Like minimp3, the decoder does no internal buffering. When streaming, keep a read-ahead buffer of several frames (16 KiB is plenty) and refill it as it drains. See `examples/measure` for a complete example.
+
+## minimp3 compatibility
+
+nanomp3 reproduces minimp3's behavior, with one policy: where minimp3 does something that is clearly a bug, nanomp3 fixes it by default and keeps the original behavior available through `Decoder::new_minimp3_compat()`. Currently there is one such case: minimp3's `i16` output rounds samples in (−1.5, −0.5] to 0 instead of −1 (about 0.3% of samples in the conformance vectors). `f32` output is identical either way.
 
 ## Features
 

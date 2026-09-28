@@ -2,16 +2,24 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use nanomp3_parity::{decode_c, decode_rust, first_difference, Feed, Flavor};
+use nanomp3_parity::{decode_reference, decode_rust, first_difference, Feed, PcmSample};
+
+fn diff<S: PcmSample>(input: &[u8], feed: Feed, compat: bool) -> Option<String> {
+    first_difference(&decode_reference::<S>(input, feed, compat), &decode_rust::<S>(input, feed, compat))
+}
 
 fuzz_target!(|data: &[u8]| {
     let Some((&w, input)) = data.split_first() else { return };
     let feed = if w == 0 { Feed::Whole } else { Feed::Window(usize::from(w) * 64) };
-    // Alternate sample formats on the low bit of the window selector.
-    let diff = if w & 1 == 0 {
-        first_difference(&decode_c::<f32>(input, feed, Flavor::reference::<f32>()), &decode_rust::<f32>(input, feed))
-    } else {
-        first_difference(&decode_c::<i16>(input, feed, Flavor::reference::<i16>()), &decode_rust::<i16>(input, feed))
+    // The low bits of the window selector pick the output format.
+    let diff = match w % 8 {
+        0 | 1 => diff::<f32>(input, feed, false),
+        2 => diff::<i16>(input, feed, true),
+        3 => diff::<i16>(input, feed, false),
+        4 => diff::<i8>(input, feed, false),
+        5 => diff::<u8>(input, feed, false),
+        6 => diff::<i32>(input, feed, false),
+        _ => diff::<u32>(input, feed, false),
     };
     if let Some(diff) = diff {
         panic!("{diff}");

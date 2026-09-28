@@ -210,6 +210,7 @@ pub(super) fn decode_frame<S: Sample>(
     bs: &mut Bs,
     pcm: &mut [S],
     nch: usize,
+    compat: bool,
 ) -> usize {
     let mut sci = ScaleInfo {
         scf: [0.; 3 * 64],
@@ -230,7 +231,7 @@ pub(super) fn decode_frame<S: Sample>(
         if i == 12 {
             i = 0;
             l12_apply_scf_384(&sci, igr, grbuf);
-            mp3d_synth_granule(&mut st.qmf_state, &mut scratch.grbuf, 12, nch, &mut pcm[out..], &mut scratch.syn);
+            mp3d_synth_granule(&mut st.qmf_state, &mut scratch.grbuf, 12, nch, &mut pcm[out..], &mut scratch.syn, compat);
             scratch.grbuf = [[0.; 576]; 2];
             out += 384 * nch;
         }

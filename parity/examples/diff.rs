@@ -3,8 +3,8 @@ use nanomp3_parity::*;
 fn main() {
     let path = std::env::args().nth(1).expect("usage: diff <file>");
     let data = std::fs::read(path).unwrap();
-    let c = decode_c::<f32>(&data, Feed::Whole, Flavor::reference::<f32>());
-    let r = decode_rust::<f32>(&data, Feed::Whole);
+    let c = decode_reference::<f32>(&data, Feed::Whole, false);
+    let r = decode_rust::<f32>(&data, Feed::Whole, false);
     let mut pos = 0;
     for (i, (a, b)) in c.iter().zip(&r).enumerate() {
         let maxdiff = a.pcm.iter().zip(&b.pcm).map(|(x, y)| (f32::from_bits(*x) - f32::from_bits(*y)).abs()).fold(0f32, f32::max);

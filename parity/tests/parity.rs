@@ -13,12 +13,12 @@ fn inputs() -> Vec<(String, Vec<u8>)> {
     v
 }
 
-fn check<S: PcmSample>(feed: Feed) {
+fn check<S: PcmSample>(feed: Feed, minimp3_compat: bool) {
     let mut failures = Vec::new();
     let mut frames = 0;
     for (name, data) in inputs() {
-        let c = decode_c::<S>(&data, feed, Flavor::reference::<S>());
-        let r = std::panic::catch_unwind(|| decode_rust::<S>(&data, feed));
+        let c = decode_reference::<S>(&data, feed, minimp3_compat);
+        let r = std::panic::catch_unwind(|| decode_rust::<S>(&data, feed, minimp3_compat));
         match r {
             Err(_) => failures.push(format!("{name}: nanomp3 panicked")),
             Ok(r) => {
@@ -35,26 +35,55 @@ fn check<S: PcmSample>(feed: Feed) {
 
 #[test]
 fn bit_exact_whole_buffer() {
-    check::<f32>(Feed::Whole);
+    check::<f32>(Feed::Whole, false);
 }
 
 #[test]
 fn bit_exact_16k_window() {
-    check::<f32>(Feed::Window(16 * 1024));
+    check::<f32>(Feed::Window(16 * 1024), false);
 }
 
 #[test]
 fn bit_exact_tiny_window() {
     // Smaller than a frame: exercises resync and the "not enough data" paths.
-    check::<f32>(Feed::Window(700));
+    check::<f32>(Feed::Window(700), false);
 }
 
 #[test]
-fn bit_exact_i16_whole_buffer() {
-    check::<i16>(Feed::Whole);
+fn bit_exact_i16_minimp3_compat() {
+    check::<i16>(Feed::Whole, true);
+    check::<i16>(Feed::Window(700), true);
+}
+
+// The remaining formats have no minimp3 build to compare with (and default
+// i16 deliberately differs from it), so they're checked against minimp3's
+// f32 output run through an independent reference conversion.
+
+#[test]
+fn i16_output() {
+    check::<i16>(Feed::Whole, false);
 }
 
 #[test]
-fn bit_exact_i16_tiny_window() {
-    check::<i16>(Feed::Window(700));
+fn i8_u8_output() {
+    check::<i8>(Feed::Whole, false);
+    check::<u8>(Feed::Whole, false);
+}
+
+#[test]
+fn u16_output() {
+    check::<u16>(Feed::Whole, false);
+}
+
+#[test]
+fn i32_u32_output() {
+    check::<i32>(Feed::Whole, false);
+    check::<u32>(Feed::Whole, false);
+}
+
+#[test]
+fn compat_only_changes_i16() {
+    // minimp3 compat mode must not alter formats minimp3 doesn't have.
+    check::<f32>(Feed::Whole, true);
+    check::<i32>(Feed::Whole, true);
 }

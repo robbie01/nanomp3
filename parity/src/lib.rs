@@ -69,37 +69,109 @@ builds! {
     SimdF32 => mp3dec_init_simd_f32, mp3dec_decode_frame_simd_f32, mp3dec_sizeof_simd_f32;
 }
 
+/// Sample formats C minimp3 can produce natively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum COutput {
+    F32,
+    S16,
+}
+
 impl Flavor {
-    /// The bit-exact reference for nanomp3 as built (depends on `layer12`).
-    pub fn reference<S: PcmSample>() -> Self {
-        match (cfg!(feature = "layer12"), S::IS_I16) {
-            (false, false) => Flavor::Mp3F32,
-            (false, true) => Flavor::Mp3S16,
-            (true, false) => Flavor::FullF32,
-            (true, true) => Flavor::FullS16,
+    /// The bit-exact C build for nanomp3 as configured (depends on `layer12`).
+    pub fn reference(output: COutput) -> Self {
+        match (cfg!(feature = "layer12"), output) {
+            (false, COutput::F32) => Flavor::Mp3F32,
+            (false, COutput::S16) => Flavor::Mp3S16,
+            (true, COutput::F32) => Flavor::FullF32,
+            (true, COutput::S16) => Flavor::FullS16,
         }
     }
 
-    fn is_i16(self) -> bool {
-        matches!(self, Flavor::Mp3S16 | Flavor::FullS16)
+    fn output(self) -> COutput {
+        match self {
+            Flavor::Mp3S16 | Flavor::FullS16 => COutput::S16,
+            _ => COutput::F32,
+        }
     }
 }
 
-/// Output sample types both decoders support.
+/// Output sample types nanomp3 supports, with an independent reference
+/// conversion for the ones minimp3 can't produce.
 pub trait PcmSample: nanomp3::Sample + Default + std::fmt::Debug {
-    const IS_I16: bool;
+    /// The C build that produces this type natively, if any.
+    const C_OUTPUT: Option<COutput>;
     fn bits(self) -> u32;
+    /// Converts minimp3's `f32` output the way nanomp3 documents it, using
+    /// f64 arithmetic and std's rounding so it doesn't share code with nanomp3.
+    fn from_c_f32(f: f32) -> Self;
 }
+
+/// `f` back in 16-bit units, scaled, rounded half away from zero, clamped.
+fn round_clamp(f: f32, scale: f64, lo: f64, hi: f64) -> f64 {
+    (f as f64 * 32768.0 * scale).round().clamp(lo, hi)
+}
+
 impl PcmSample for f32 {
-    const IS_I16: bool = false;
+    const C_OUTPUT: Option<COutput> = Some(COutput::F32);
     fn bits(self) -> u32 {
         self.to_bits()
     }
+    fn from_c_f32(f: f32) -> Self {
+        f
+    }
 }
 impl PcmSample for i16 {
-    const IS_I16: bool = true;
+    const C_OUTPUT: Option<COutput> = Some(COutput::S16);
     fn bits(self) -> u32 {
         self as u16 as u32
+    }
+    fn from_c_f32(f: f32) -> Self {
+        round_clamp(f, 1.0, i16::MIN as f64, i16::MAX as f64) as i16
+    }
+}
+impl PcmSample for i8 {
+    const C_OUTPUT: Option<COutput> = None;
+    fn bits(self) -> u32 {
+        self as u8 as u32
+    }
+    fn from_c_f32(f: f32) -> Self {
+        round_clamp(f, 1.0 / 256.0, i8::MIN as f64, i8::MAX as f64) as i8
+    }
+}
+impl PcmSample for i32 {
+    const C_OUTPUT: Option<COutput> = None;
+    fn bits(self) -> u32 {
+        self as u32
+    }
+    fn from_c_f32(f: f32) -> Self {
+        round_clamp(f, 65536.0, i32::MIN as f64, i32::MAX as f64) as i32
+    }
+}
+impl PcmSample for u8 {
+    const C_OUTPUT: Option<COutput> = None;
+    fn bits(self) -> u32 {
+        self as u32
+    }
+    fn from_c_f32(f: f32) -> Self {
+        i8::from_c_f32(f) as u8 ^ 0x80
+    }
+}
+impl PcmSample for u16 {
+    const C_OUTPUT: Option<COutput> = None;
+    fn bits(self) -> u32 {
+        self as u32
+    }
+    fn from_c_f32(f: f32) -> Self {
+        i16::from_c_f32(f) as u16 ^ 0x8000
+    }
+}
+impl PcmSample for u32 {
+    const C_OUTPUT: Option<COutput> = None;
+    fn bits(self) -> u32 {
+        self
+    }
+    fn from_c_f32(f: f32) -> Self {
+        i32::from_c_f32(f) as u32 ^ 0x8000_0000
     }
 }
 
@@ -125,7 +197,7 @@ impl CDecoder {
 
     /// Mirrors `mp3dec_decode_frame`. Returns (samples per channel, info).
     pub fn decode<S: PcmSample>(&mut self, mp3: &[u8], pcm: &mut [S]) -> (usize, FrameInfo) {
-        assert_eq!(S::IS_I16, self.flavor.is_i16(), "sample type does not match {:?}", self.flavor);
+        assert_eq!(S::C_OUTPUT, Some(self.flavor.output()), "sample type does not match {:?}", self.flavor);
         assert!(pcm.len() >= nanomp3::MAX_SAMPLES_PER_FRAME);
         let len = c_int::try_from(mp3.len()).expect("input too large for C API");
         let mut info = FrameInfo::default();
@@ -193,9 +265,26 @@ pub fn decode_c<S: PcmSample>(input: &[u8], feed: Feed, flavor: Flavor) -> Vec<F
     })
 }
 
+/// What nanomp3 must produce: C's native output where minimp3 has the format
+/// (for default-mode `i16`, only in compat mode, since the default fixes
+/// minimp3's rounding quirk), otherwise C's `f32` output converted.
+pub fn decode_reference<S: PcmSample>(input: &[u8], feed: Feed, minimp3_compat: bool) -> Vec<Frame> {
+    match S::C_OUTPUT {
+        Some(COutput::F32) => decode_c::<S>(input, feed, Flavor::reference(COutput::F32)),
+        Some(COutput::S16) if minimp3_compat => decode_c::<S>(input, feed, Flavor::reference(COutput::S16)),
+        _ => {
+            let mut frames = decode_c::<f32>(input, feed, Flavor::reference(COutput::F32));
+            for b in frames.iter_mut().flat_map(|f| &mut f.pcm) {
+                *b = S::from_c_f32(f32::from_bits(*b)).bits();
+            }
+            frames
+        }
+    }
+}
+
 /// Decode `input` with nanomp3.
-pub fn decode_rust<S: PcmSample>(input: &[u8], feed: Feed) -> Vec<Frame> {
-    let mut dec = nanomp3::Decoder::new();
+pub fn decode_rust<S: PcmSample>(input: &[u8], feed: Feed, minimp3_compat: bool) -> Vec<Frame> {
+    let mut dec = if minimp3_compat { nanomp3::Decoder::new_minimp3_compat() } else { nanomp3::Decoder::new() };
     run::<S>(input, feed, |mp3, pcm| {
         let (consumed, info) = dec.decode(mp3, pcm);
         (consumed, info.map(|i| (i.samples_produced, i.channels.num(), i.sample_rate, i.bitrate)))
