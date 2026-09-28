@@ -12,7 +12,9 @@
 // Index loops mirror the C and keep parallel arrays visibly in step.
 #![allow(clippy::needless_range_loop)]
 
+mod lanes;
 mod tables;
+use lanes::{Lanes, F4};
 use tables::*;
 
 const HDR_SIZE: usize = 4;
@@ -949,67 +951,80 @@ fn l3_decode(h: &mut Mp3Dec, s: &mut Scratch, bs: &mut Bs, gr_info: &[GrInfo], n
     }
 }
 
+/// DCT-II over columns `k..k + T::N` of the 18x32 subband matrix.
+#[inline(always)]
+fn mp3d_dct_ii_cols<T: Lanes>(grbuf: &mut [f32; 576], k: usize) {
+    let c = T::splat;
+    let mut t = [[c(0.0); 8]; 4];
+    for i in 0..8 {
+        let x0 = T::load(&grbuf[k + i * 18..]);
+        let x1 = T::load(&grbuf[k + (15 - i) * 18..]);
+        let x2 = T::load(&grbuf[k + (16 + i) * 18..]);
+        let x3 = T::load(&grbuf[k + (31 - i) * 18..]);
+        let t0 = x0 + x3;
+        let t1 = x1 + x2;
+        let t2 = (x1 - x2) * c(MP3D_DCT_II_G_SEC[3 * i]);
+        let t3 = (x0 - x3) * c(MP3D_DCT_II_G_SEC[3 * i + 1]);
+        t[0][i] = t0 + t1;
+        t[1][i] = (t0 - t1) * c(MP3D_DCT_II_G_SEC[3 * i + 2]);
+        t[2][i] = t3 + t2;
+        t[3][i] = (t3 - t2) * c(MP3D_DCT_II_G_SEC[3 * i + 2]);
+    }
+    for x in &mut t {
+        let [mut x0, mut x1, mut x2, mut x3, mut x4, mut x5, mut x6, mut x7] = *x;
+        let mut xt = x0 - x7;
+        x0 += x7;
+        x7 = x1 - x6;
+        x1 += x6;
+        x6 = x2 - x5;
+        x2 += x5;
+        x5 = x3 - x4;
+        x3 += x4;
+        x4 = x0 - x3;
+        x0 += x3;
+        x3 = x1 - x2;
+        x1 += x2;
+        x[0] = x0 + x1;
+        x[4] = (x0 - x1) * c(0.70710677);
+        x5 += x6;
+        x6 = (x6 + x7) * c(0.70710677);
+        x7 += xt;
+        x3 = (x3 + x4) * c(0.70710677);
+        x5 -= x7 * c(0.198912367); // rotate by PI/8
+        x7 += x5 * c(0.382683432);
+        x5 -= x7 * c(0.198912367);
+        x0 = xt - x6;
+        xt += x6;
+        x[1] = (xt + x7) * c(0.50979561);
+        x[2] = (x4 + x3) * c(0.54119611);
+        x[3] = (x0 - x5) * c(0.60134488);
+        x[5] = (x0 + x5) * c(0.89997619);
+        x[6] = (x4 - x3) * c(1.30656302);
+        x[7] = (xt - x7) * c(2.56291556);
+    }
+    for i in 0..7 {
+        let y = k + i * 4 * 18;
+        t[0][i].store(&mut grbuf[y..]);
+        (t[2][i] + t[3][i] + t[3][i + 1]).store(&mut grbuf[y + 18..]);
+        (t[1][i] + t[1][i + 1]).store(&mut grbuf[y + 2 * 18..]);
+        (t[2][i + 1] + t[3][i] + t[3][i + 1]).store(&mut grbuf[y + 3 * 18..]);
+    }
+    let y = k + 7 * 4 * 18;
+    t[0][7].store(&mut grbuf[y..]);
+    (t[2][7] + t[3][7]).store(&mut grbuf[y + 18..]);
+    t[1][7].store(&mut grbuf[y + 2 * 18..]);
+    t[3][7].store(&mut grbuf[y + 3 * 18..]);
+}
+
 fn mp3d_dct_ii(grbuf: &mut [f32; 576], n: usize) {
-    for k in 0..n {
-        let mut t = [[0f32; 8]; 4];
-        for i in 0..8 {
-            let x0 = grbuf[k + i * 18];
-            let x1 = grbuf[k + (15 - i) * 18];
-            let x2 = grbuf[k + (16 + i) * 18];
-            let x3 = grbuf[k + (31 - i) * 18];
-            let t0 = x0 + x3;
-            let t1 = x1 + x2;
-            let t2 = (x1 - x2) * MP3D_DCT_II_G_SEC[3 * i];
-            let t3 = (x0 - x3) * MP3D_DCT_II_G_SEC[3 * i + 1];
-            t[0][i] = t0 + t1;
-            t[1][i] = (t0 - t1) * MP3D_DCT_II_G_SEC[3 * i + 2];
-            t[2][i] = t3 + t2;
-            t[3][i] = (t3 - t2) * MP3D_DCT_II_G_SEC[3 * i + 2];
-        }
-        for x in &mut t {
-            let [mut x0, mut x1, mut x2, mut x3, mut x4, mut x5, mut x6, mut x7] = *x;
-            let mut xt = x0 - x7;
-            x0 += x7;
-            x7 = x1 - x6;
-            x1 += x6;
-            x6 = x2 - x5;
-            x2 += x5;
-            x5 = x3 - x4;
-            x3 += x4;
-            x4 = x0 - x3;
-            x0 += x3;
-            x3 = x1 - x2;
-            x1 += x2;
-            x[0] = x0 + x1;
-            x[4] = (x0 - x1) * 0.70710677;
-            x5 += x6;
-            x6 = (x6 + x7) * 0.70710677;
-            x7 += xt;
-            x3 = (x3 + x4) * 0.70710677;
-            x5 -= x7 * 0.198912367; // rotate by PI/8
-            x7 += x5 * 0.382683432;
-            x5 -= x7 * 0.198912367;
-            x0 = xt - x6;
-            xt += x6;
-            x[1] = (xt + x7) * 0.50979561;
-            x[2] = (x4 + x3) * 0.54119611;
-            x[3] = (x0 - x5) * 0.60134488;
-            x[5] = (x0 + x5) * 0.89997619;
-            x[6] = (x4 - x3) * 1.30656302;
-            x[7] = (xt - x7) * 2.56291556;
-        }
-        for i in 0..7 {
-            let y = k + i * 4 * 18;
-            grbuf[y] = t[0][i];
-            grbuf[y + 18] = t[2][i] + t[3][i] + t[3][i + 1];
-            grbuf[y + 2 * 18] = t[1][i] + t[1][i + 1];
-            grbuf[y + 3 * 18] = t[2][i + 1] + t[3][i] + t[3][i + 1];
-        }
-        let y = k + 7 * 4 * 18;
-        grbuf[y] = t[0][7];
-        grbuf[y + 18] = t[2][7] + t[3][7];
-        grbuf[y + 2 * 18] = t[1][7];
-        grbuf[y + 3 * 18] = t[3][7];
+    let mut k = 0;
+    while k + 4 <= n {
+        mp3d_dct_ii_cols::<F4>(grbuf, k);
+        k += 4;
+    }
+    while k < n {
+        mp3d_dct_ii_cols::<f32>(grbuf, k);
+        k += 1;
     }
 }
 
@@ -1084,26 +1099,25 @@ fn mp3d_synth<S: Sample>(xl: &[f32], xr: &[f32], dst: &mut [S], nch: usize, lins
         lins[ZLIN + c - 64 + 2] = xl[18 * (1 + i)];
         lins[ZLIN + c - 64 + 3] = xr[18 * (1 + i)];
 
+        // One column of the 16-row filterbank history, 4 lanes at a time:
+        // [left even, right even, left odd, right odd].
         let w = &MP3D_SYNTH_G_WIN[(14 - i) * 16..][..16];
-        let mut a = [0f32; 4];
-        let mut b = [0f32; 4];
-        for k in 0..8 {
-            let (w0, w1) = (w[2 * k], w[2 * k + 1]);
-            let vz = &lins[ZLIN + c - k * 64..][..4];
-            let vy = &lins[ZLIN + c - (15 - k) * 64..][..4];
-            for j in 0..4 {
-                if k == 0 {
-                    b[j] = vz[j] * w1 + vy[j] * w0;
-                    a[j] = vz[j] * w0 - vy[j] * w1;
-                } else if k % 2 == 1 {
-                    b[j] += vz[j] * w1 + vy[j] * w0;
-                    a[j] += vy[j] * w1 - vz[j] * w0;
-                } else {
-                    b[j] += vz[j] * w1 + vy[j] * w0;
-                    a[j] += vz[j] * w0 - vy[j] * w1;
-                }
+        let vz = |k: usize| F4::load(&lins[ZLIN + c - k * 64..]);
+        let vy = |k: usize| F4::load(&lins[c + k * 64..]);
+        let w0 = |k: usize| F4::splat(w[2 * k]);
+        let w1 = |k: usize| F4::splat(w[2 * k + 1]);
+        let mut b = vz(0) * w1(0) + vy(0) * w0(0);
+        let mut a = vz(0) * w0(0) - vy(0) * w1(0);
+        for k in [1, 3, 5, 7] {
+            b += vz(k) * w1(k) + vy(k) * w0(k);
+            a += vy(k) * w1(k) - vz(k) * w0(k);
+            if k < 7 {
+                let k = k + 1;
+                b += vz(k) * w1(k) + vy(k) * w0(k);
+                a += vz(k) * w0(k) - vy(k) * w1(k);
             }
         }
+        let (a, b) = (a.to_array(), b.to_array());
 
         dst[r + (15 - i) * nch] = S::scale_pcm(a[1]);
         dst[r + (17 + i) * nch] = S::scale_pcm(b[1]);

@@ -6,7 +6,11 @@ publish = false
 description = "Bit-exact comparison of nanomp3 against upstream minimp3 (C)"
 
 [dependencies]
-nanomp3 = { path = ".." }
+nanomp3 = { path = "..", default-features = false }
+
+[features]
+default = ["wide"]
+wide = ["nanomp3/wide"]
 
 [build-dependencies]
 cc = "1"
