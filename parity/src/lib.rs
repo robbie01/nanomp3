@@ -2,6 +2,8 @@
 //! nanomp3 must match bit for bit. This crate is never published; `unsafe`
 //! here is confined to the FFI boundary.
 
+pub mod ex;
+
 use std::os::raw::{c_int, c_ulong, c_void};
 
 #[repr(C)]
