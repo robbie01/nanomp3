@@ -74,7 +74,7 @@ pub struct FrameInfo {
 
 /// Persistent decoder state (`mp3dec_t`).
 #[derive(Clone)]
-pub struct Mp3Dec {
+struct State {
     mdct_overlap: [[f32; 9 * 32]; 2],
     qmf_state: [f32; 15 * 2 * 32],
     reserv: i32,
@@ -83,8 +83,8 @@ pub struct Mp3Dec {
     reserv_buf: [u8; MAX_BITRESERVOIR_BYTES],
 }
 
-impl Mp3Dec {
-    pub const fn new() -> Self {
+impl State {
+    const fn new() -> Self {
         Self {
             mdct_overlap: [[0.; 9 * 32]; 2],
             qmf_state: [0.; 15 * 2 * 32],
@@ -92,6 +92,40 @@ impl Mp3Dec {
             free_format_bytes: 0,
             header: [0; 4],
             reserv_buf: [0; MAX_BITRESERVOIR_BYTES],
+        }
+    }
+}
+
+/// Per-frame working memory (`mp3dec_scratch_t`). Unlike C, it lives in the
+/// decoder rather than on the stack so it doesn't have to be re-initialized for
+/// every frame; only the parts C might read before writing are cleared.
+#[derive(Clone)]
+struct Scratch {
+    grbuf: [[f32; 576]; 2],
+    scf: [f32; 40],
+    syn: [f32; (18 + 15) * 2 * 32],
+    ist_pos: [[u8; 39]; 2],
+}
+
+/// The decoder: persistent state plus scratch memory.
+#[derive(Clone)]
+pub struct Mp3Dec {
+    st: State,
+    scratch: Scratch,
+    maindata: [u8; MAX_BITRESERVOIR_BYTES + MAX_L3_FRAME_PAYLOAD_BYTES],
+}
+
+impl Mp3Dec {
+    pub const fn new() -> Self {
+        Self {
+            st: State::new(),
+            scratch: Scratch {
+                grbuf: [[0.; 576]; 2],
+                scf: [0.; 40],
+                syn: [0.; (18 + 15) * 2 * 32],
+                ist_pos: [[0; 39]; 2],
+            },
+            maindata: [0; MAX_BITRESERVOIR_BYTES + MAX_L3_FRAME_PAYLOAD_BYTES],
         }
     }
 }
@@ -876,7 +910,7 @@ fn l3_imdct_gr(grbuf: &mut [f32; 576], overlap: &mut [f32; 288], block_type: u8,
     }
 }
 
-fn l3_save_reservoir(h: &mut Mp3Dec, bs: &Bs) {
+fn l3_save_reservoir(h: &mut State, bs: &Bs) {
     let mut pos = ((bs.pos + 7) as u32 / 8) as i32;
     let mut remains = (bs.limit as u32 / 8).wrapping_sub(pos as u32) as i32;
     if remains > MAX_BITRESERVOIR_BYTES as i32 {
@@ -891,7 +925,7 @@ fn l3_save_reservoir(h: &mut Mp3Dec, bs: &Bs) {
 }
 
 fn l3_restore_reservoir<'a>(
-    h: &Mp3Dec,
+    h: &State,
     bs: &Bs,
     maindata: &'a mut [u8; MAX_BITRESERVOIR_BYTES + MAX_L3_FRAME_PAYLOAD_BYTES],
     main_data_begin: i32,
@@ -903,19 +937,13 @@ fn l3_restore_reservoir<'a>(
     let frame_start = (bs.pos / 8) as usize;
     maindata[bytes_have..bytes_have + frame_bytes]
         .copy_from_slice(&bs.buf[frame_start..frame_start + frame_bytes]);
-    (Bs::new(&maindata[..], (bytes_have + frame_bytes) as i32), h.reserv >= main_data_begin)
+    // Bounding the reader to the valid bytes makes Huffman over-reads on corrupt
+    // streams see zeros without having to clear the buffer.
+    let len = bytes_have + frame_bytes;
+    (Bs::new(&maindata[..len], len as i32), h.reserv >= main_data_begin)
 }
 
-/// Per-frame scratch memory (`mp3dec_scratch_t`, minus the bit reservoir and
-/// side info, which are borrowed separately).
-struct Scratch {
-    grbuf: [[f32; 576]; 2],
-    scf: [f32; 40],
-    syn: [f32; (18 + 15) * 2 * 32],
-    ist_pos: [[u8; 39]; 2],
-}
-
-fn l3_decode(h: &mut Mp3Dec, s: &mut Scratch, bs: &mut Bs, gr_info: &[GrInfo], nch: usize) {
+fn l3_decode(h: &mut State, s: &mut Scratch, bs: &mut Bs, gr_info: &[GrInfo], nch: usize) {
     let hdr = Header(h.header);
     for ch in 0..nch {
         let layer3gr_limit = bs.pos + i32::from(gr_info[ch].part_23_length);
@@ -1230,6 +1258,7 @@ pub fn mp3dec_decode_frame<S: Sample>(
     pcm: Option<&mut [S]>,
     info: &mut FrameInfo,
 ) -> usize {
+    let Mp3Dec { st: dec, scratch, maindata } = dec;
     let mp3_bytes = mp3.len();
     let mut i = 0;
     let mut frame_size = 0;
@@ -1244,7 +1273,7 @@ pub fn mp3dec_decode_frame<S: Sample>(
         }
     }
     if frame_size == 0 {
-        *dec = Mp3Dec::new();
+        *dec = State::new();
         (i, frame_size) = mp3d_find_frame(mp3, &mut dec.free_format_bytes);
         if frame_size == 0 || i + frame_size > mp3_bytes {
             info.frame_bytes = i;
@@ -1283,19 +1312,16 @@ pub fn mp3dec_decode_frame<S: Sample>(
         return 0;
     }
 
-    let mut maindata = [0u8; MAX_BITRESERVOIR_BYTES + MAX_L3_FRAME_PAYLOAD_BYTES];
-    let (mut bs, success) = l3_restore_reservoir(dec, &bs_frame, &mut maindata, main_data_begin);
+    let (mut bs, success) = l3_restore_reservoir(dec, &bs_frame, maindata, main_data_begin);
     if success {
-        let mut scratch = Scratch {
-            grbuf: [[0.; 576]; 2],
-            scf: [0.; 40],
-            syn: [0.; (18 + 15) * 2 * 32],
-            ist_pos: [[0; 39]; 2],
-        };
+        // C leaves these uninitialized and corrupt streams can read them before
+        // writing; clearing them keeps results deterministic.
+        scratch.scf = [0.; 40];
+        scratch.ist_pos = [[0; 39]; 2];
         let granules = if hdr.test_mpeg1() { 2 } else { 1 };
         for (igr, pcm) in pcm.chunks_exact_mut(576 * nch).take(granules).enumerate() {
             scratch.grbuf = [[0.; 576]; 2];
-            l3_decode(dec, &mut scratch, &mut bs, &gr_info[igr * nch..], nch);
+            l3_decode(dec, scratch, &mut bs, &gr_info[igr * nch..], nch);
             mp3d_synth_granule(&mut dec.qmf_state, &mut scratch.grbuf, 18, nch, pcm, &mut scratch.syn);
         }
     }
