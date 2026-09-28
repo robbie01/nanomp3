@@ -10,3 +10,12 @@ nanomp3 = { path = ".." }
 
 [build-dependencies]
 cc = "1"
+
+[dev-dependencies]
+criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+# Frozen pre-spruce-up master, so every optimization is measured against the same baseline.
+nanomp3-baseline = { package = "nanomp3", git = "https://github.com/robbie01/nanomp3", rev = "91b2d3961ffd3c4d321b6d71b4422867cd620288" }
+
+[[bench]]
+name = "decode"
+harness = false
