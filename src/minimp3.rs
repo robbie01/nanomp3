@@ -2034,13 +2034,24 @@ unsafe fn mp3d_synth_granule(
         );
         i += 2;
     }
-    memcpy(
-        qmf_state as *mut (),
-        lins.offset((nbands * 64) as isize) as *const (),
-        (::core::mem::size_of::<f32>() as usize)
-            .wrapping_mul(15 as i32 as usize)
-            .wrapping_mul(64 as i32 as usize),
-    );
+    if nch == 1 {
+        // Standard (non-MINIMP3_NONSTANDARD_BUT_LOGICAL) behavior: a mono
+        // frame only advances the left channel's filterbank history, so a
+        // later switch to stereo starts the right channel from its old state.
+        i = 0;
+        while i < 15 * 64 {
+            *qmf_state.add(i) = *lins.add(nbands as usize * 64 + i);
+            i += 2;
+        }
+    } else {
+        memcpy(
+            qmf_state as *mut (),
+            lins.offset((nbands * 64) as isize) as *const (),
+            (::core::mem::size_of::<f32>() as usize)
+                .wrapping_mul(15 as i32 as usize)
+                .wrapping_mul(64 as i32 as usize),
+        );
+    }
 }
 
 fn mp3d_match_frame(
