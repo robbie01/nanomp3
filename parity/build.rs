@@ -83,6 +83,33 @@ int shim_detect_cb_NAME(mp3dec_io_t *io)
 void shim_free_NAME(void *p) { free(p); }
 "#;
 
+/// minimp3 reads uninitialized locals on some inputs (e.g. `mp3dec_detect_*`
+/// passes an uninitialized `free_format_bytes` to `mp3d_find_frame`, so free-
+/// format streams read out of bounds). The reference must zero them, which
+/// MSVC's cl.exe can't do; on MSVC targets use clang-cl instead when it's
+/// available (it ships with Visual Studio and the GitHub Windows runners).
+///
+/// This sets `CC_<target>` rather than calling `cc::Build::compiler`, so cc
+/// still sets up the MSVC include and library paths for it.
+fn prefer_clang_cl_on_msvc() {
+    let target = std::env::var("TARGET").unwrap();
+    let var = format!("CC_{}", target.replace('-', "_"));
+    if !target.contains("msvc") || std::env::var_os(&var).is_some() || std::env::var_os("CC").is_some() {
+        return;
+    }
+    let found = [r"C:\Program Files\LLVM\bin\clang-cl.exe", "clang-cl.exe"]
+        .into_iter()
+        .find(|c| std::process::Command::new(c).arg("--version").output().is_ok_and(|o| o.status.success()));
+    match found {
+        // Build scripts are single-threaded.
+        Some(clang_cl) => std::env::set_var(var, clang_cl),
+        None => println!(
+            "cargo:warning=clang-cl not found: building the minimp3 reference with cl.exe, which can't \
+             zero-initialize locals; minimp3_ex comparisons may crash or fail nondeterministically"
+        ),
+    }
+}
+
 fn compile(out: &std::path::Path, name: &str, src: String) {
     let file = out.join(format!("minimp3_{name}.c"));
     std::fs::write(&file, src).unwrap();
@@ -107,6 +134,7 @@ fn main() {
     let path = |f: &str| dir.join(f).display().to_string().replace('\\', "/");
     println!("cargo:rerun-if-changed={}", path("minimp3.h"));
     println!("cargo:rerun-if-changed={}", path("minimp3_ex.h"));
+    prefer_clang_cl_on_msvc();
 
     for (name, defines) in BUILDS {
         let mut src = String::new();

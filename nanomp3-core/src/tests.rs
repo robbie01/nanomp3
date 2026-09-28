@@ -132,7 +132,7 @@ fn layer_2_frames() {
     // MPEG-1 Layer II, 128 kbps, 44.1 kHz, mono, no CRC: 417-byte frames of
     // silence (all bit allocations zero).
     let mut stream = [0u8; 4 * 417];
-    for frame in stream.chunks_exact_mut(417) {
+    for frame in stream.as_chunks_mut::<417>().0 {
         frame[..4].copy_from_slice(&[0xff, 0xfd, 0x80, 0xc0]);
     }
     let mut decoder = Decoder::new();

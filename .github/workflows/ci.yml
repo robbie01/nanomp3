@@ -83,5 +83,7 @@ jobs:
         working-directory: fuzz
         run: |
           for t in decode differential ex; do
-            cargo fuzz run $t ../seeds -- -max_len=16384 -max_total_time=120
+            # The prebuilt cargo-fuzz is a static musl binary and defaults to its
+            # own target, where sanitizers don't work.
+            cargo fuzz run --target x86_64-unknown-linux-gnu $t ../seeds -- -max_len=16384 -max_total_time=120
           done

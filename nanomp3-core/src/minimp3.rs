@@ -674,7 +674,7 @@ fn l3_huffman_pairs<const LINBITS: bool>(
     linbits: i32,
     one: f32,
 ) {
-    for pair in out.chunks_exact_mut(2) {
+    for pair in out.as_chunks_mut::<2>().0 {
         let mut w = 5;
         let mut leaf = i32::from(codebook[br.peek(w) as usize]);
         while leaf < 0 {
@@ -810,7 +810,7 @@ fn l3_stereo_top_band(right: &[f32], sfb: &[u8], nbands: usize, max_band: &mut [
     for i in 0..nbands {
         let n = sfb[i] as usize;
         let band = &right[off..off + n];
-        if band.chunks_exact(2).any(|p| p[0] != 0.0 || p[1] != 0.0) {
+        if band.as_chunks::<2>().0.iter().any(|p| p[0] != 0.0 || p[1] != 0.0) {
             max_band[i % 3] = i as i32;
         }
         off += n;
@@ -1011,7 +1011,7 @@ fn l3_imdct12(x: &[f32], dst: &mut [f32], overlap: &mut [f32]) {
 }
 
 fn l3_imdct_short(grbuf: &mut [f32], overlap: &mut [f32], nbands: usize) {
-    for (grbuf, overlap) in grbuf.chunks_exact_mut(18).zip(overlap.chunks_exact_mut(9)).take(nbands) {
+    for (grbuf, overlap) in grbuf.as_chunks_mut::<18>().0.iter_mut().zip(overlap.as_chunks_mut::<9>().0).take(nbands) {
         let mut tmp = [0f32; 18];
         tmp.copy_from_slice(grbuf);
         grbuf[..6].copy_from_slice(&overlap[..6]);
@@ -1023,7 +1023,7 @@ fn l3_imdct_short(grbuf: &mut [f32], overlap: &mut [f32], nbands: usize) {
 }
 
 fn l3_change_sign(grbuf: &mut [f32; 576]) {
-    for band in grbuf.chunks_exact_mut(18).skip(1).step_by(2) {
+    for band in grbuf.as_chunks_mut::<18>().0.iter_mut().skip(1).step_by(2) {
         for x in band.iter_mut().skip(1).step_by(2) {
             *x = -*x;
         }
@@ -1342,7 +1342,7 @@ fn mp3d_synth_granule<S: Sample>(
         // Standard (not MINIMP3_NONSTANDARD_BUT_LOGICAL) behavior: a mono frame
         // only advances the left channel's filterbank history, so a later
         // switch to stereo starts the right channel from its old state.
-        for (q, l) in qmf_state.chunks_exact_mut(2).zip(tail.chunks_exact(2)) {
+        for (q, l) in qmf_state.as_chunks_mut::<2>().0.iter_mut().zip(tail.as_chunks::<2>().0) {
             q[0] = l[0];
         }
     } else {
