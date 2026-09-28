@@ -1,83 +1,42 @@
-mod buffer;
 mod snd;
 
-use std::{env, fs::File, io::{BufWriter, Read as _, Write}};
+use std::{env, error::Error, fs::File, io::{BufReader, BufWriter, Write}};
 
-use buffer::Buffer;
-
-const MIN_BUFFER_SIZE: usize = 16384;
-
-/// Convert an MP3 file to a Sun Au (.snd) file.
-/// 
-/// Note: this example is *not* correct for files with a variable sample rate or number of channels.
-fn main() {
-    let (mut file, dest) = match (env::args_os().nth(1), env::args_os().nth(2)) {
-        (Some(arg1), Some(arg2)) => (
-            File::open(arg1).unwrap(),
-            BufWriter::new(File::create(arg2).unwrap())
-        ),
-        _ => {
-            eprintln!("usage: measure <file.mp3> <output.snd>");
-            return;
-        }
+/// Convert an MP3 file to a Sun Au (.snd) file and print its length.
+///
+/// Note: this example is *not* correct for files whose sample rate or number of
+/// channels changes mid-stream.
+fn main() -> Result<(), Box<dyn Error>> {
+    let (Some(src), Some(dest)) = (env::args_os().nth(1), env::args_os().nth(2)) else {
+        eprintln!("usage: measure <file.mp3> <output.snd>");
+        return Ok(());
     };
 
-    let mut snd = snd::AuWriter::new(dest);
-    let mut written_header = false;
-    
-    let mut decoder = nanomp3::Decoder::new();
-    let mut mp3_buffer = Buffer::new(vec![0; 128*MIN_BUFFER_SIZE]);
-    let mut eos = false;
-    let mut pcm_buffer = [0f32; nanomp3::MAX_SAMPLES_PER_FRAME];
+    // The reader skips tags, trims the encoder delay/padding, and buffers input.
+    let mut reader = nanomp3::Reader::<_, f32>::new(BufReader::new(File::open(src)?))?;
+    let Some(channels) = reader.channels() else {
+        eprintln!("no MPEG audio found");
+        return Ok(());
+    };
 
-    let mut time = 0.;
-    
+    let mut snd = snd::AuWriter::new(BufWriter::new(File::create(dest)?));
+    snd.write_header(reader.sample_rate(), channels.num().into())?;
+
+    let mut pcm = vec![0f32; 4096];
+    let mut samples = 0;
     loop {
-        if mp3_buffer.is_empty() {
-            if eos {
-                // End of stream reached
-                break;
-            }
-        } else {
-            let (consumed, info) = decoder.decode(mp3_buffer.data(), &mut pcm_buffer);
-            mp3_buffer.consume(consumed);
-            if let Some(info) = info {
-                if !written_header {
-                    snd.write_header(info.sample_rate, info.channels.num().into()).unwrap();
-                    written_header = true;
-                }
-
-                let n = info.samples_produced * usize::from(info.channels.num());
-
-                for &sample in &pcm_buffer[..n] {
-                    snd.write_sample(sample).unwrap();
-                }
-                // println!("{info:?}");
-                time += (info.samples_produced as f64) / (info.sample_rate as f64);
-            }
+        let n = reader.read(&mut pcm)?;
+        if n == 0 {
+            break;
         }
-
-        if !eos && mp3_buffer.len() < MIN_BUFFER_SIZE {
-            mp3_buffer.reclaim();
-
-            // Read until buffer is sufficiently full or EOS
-            loop {
-                let n = file.read(mp3_buffer.remaining_capacity()).unwrap();
-                if n == 0 {
-                    eos = true;
-                }
-                mp3_buffer.expand(n);
-
-                if eos || mp3_buffer.len() >= MIN_BUFFER_SIZE {
-                    break;
-                }
-            }
+        for &sample in &pcm[..n] {
+            snd.write_sample(sample)?;
         }
+        samples += n;
     }
+    snd.into_inner().flush()?;
 
-    snd.into_inner().flush().unwrap();
-
-    let m = (time / 60.).floor();
-    let s = (time % 60.).floor();
-    println!("{m}m{s}s");
+    let time = samples as f64 / f64::from(channels.num()) / f64::from(reader.sample_rate());
+    println!("{}m{}s", (time / 60.).floor(), (time % 60.).floor());
+    Ok(())
 }
