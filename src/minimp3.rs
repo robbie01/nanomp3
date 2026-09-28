@@ -767,31 +767,35 @@ fn l3_reorder(grbuf: &mut [f32], scratch: &mut [f32], sfb: &[u8]) {
 }
 
 fn l3_antialias(grbuf: &mut [f32; 576], nbands: usize) {
+    let aa = |k: usize, i: usize| F4::load(&L3_ANTIALIAS_G_AA[k][i..]);
     for b in 0..nbands {
         let (lo, hi) = grbuf[18 * b..18 * b + 36].split_at_mut(18);
-        for i in 0..8 {
-            let u = hi[i];
-            let d = lo[17 - i];
-            hi[i] = u * L3_ANTIALIAS_G_AA[0][i] - d * L3_ANTIALIAS_G_AA[1][i];
-            lo[17 - i] = u * L3_ANTIALIAS_G_AA[1][i] + d * L3_ANTIALIAS_G_AA[0][i];
+        for i in [0, 4] {
+            // hi[i..i+4] against lo[17-i..=14-i] (reversed).
+            let u = F4::load(&hi[i..]);
+            let d = F4::load(&lo[14 - i..]).rev();
+            (u * aa(0, i) - d * aa(1, i)).store(&mut hi[i..]);
+            (u * aa(1, i) + d * aa(0, i)).rev().store(&mut lo[14 - i..]);
         }
     }
 }
 
-fn l3_dct3_9(y: &mut [f32; 9]) {
+#[inline(always)]
+fn l3_dct3_9<T: Lanes>(y: &mut [T; 9]) {
+    let c = T::splat;
     let mut s0 = y[0];
     let mut s2 = y[2];
     let mut s4 = y[4];
     let mut s6 = y[6];
     let mut s8 = y[8];
-    let mut t0 = s0 + s6 * 0.5;
+    let mut t0 = s0 + s6 * c(0.5);
     s0 -= s6;
-    let mut t4 = (s4 + s2) * 0.93969262;
-    let mut t2 = (s8 + s2) * 0.76604444;
-    s6 = (s4 - s8) * 0.17364818;
+    let mut t4 = (s4 + s2) * c(0.93969262);
+    let mut t2 = (s8 + s2) * c(0.76604444);
+    s6 = (s4 - s8) * c(0.17364818);
     s4 += s8 - s2;
 
-    s2 = s0 - s4 * 0.5;
+    s2 = s0 - s4 * c(0.5);
     y[4] = s4 + s0;
     s8 = t0 - t2 + s6;
     s0 = t0 - t4 + t2;
@@ -802,11 +806,11 @@ fn l3_dct3_9(y: &mut [f32; 9]) {
     let mut s5 = y[5];
     let mut s7 = y[7];
 
-    s3 *= 0.86602540;
-    t0 = (s5 + s1) * 0.98480775;
-    t4 = (s5 - s7) * 0.34202014;
-    t2 = (s1 + s7) * 0.64278761;
-    s1 = (s1 - s5 - s7) * 0.86602540;
+    s3 = s3 * c(0.86602540);
+    t0 = (s5 + s1) * c(0.98480775);
+    t4 = (s5 - s7) * c(0.34202014);
+    t2 = (s1 + s7) * c(0.64278761);
+    s1 = (s1 - s5 - s7) * c(0.86602540);
 
     s5 = t0 - s3 - t2;
     s7 = t4 - s3 - t0;
@@ -822,33 +826,47 @@ fn l3_dct3_9(y: &mut [f32; 9]) {
     y[8] = s4 + s7;
 }
 
+/// IMDCT-36 of `T::N` adjacent bands at once (one band per lane).
+#[inline(always)]
+fn l3_imdct36_bands<T: Lanes>(grbuf: &mut [f32], overlap: &mut [f32], window: &[f32; 18]) {
+    let c = T::splat;
+    let g = |grbuf: &[f32], o: usize| T::gather(&grbuf[o..], 18);
+    let mut co = [c(0.0); 9];
+    let mut si = [c(0.0); 9];
+    co[0] = -g(grbuf, 0);
+    si[0] = g(grbuf, 17);
+    for i in 0..4 {
+        si[8 - 2 * i] = g(grbuf, 4 * i + 1) - g(grbuf, 4 * i + 2);
+        co[1 + 2 * i] = g(grbuf, 4 * i + 1) + g(grbuf, 4 * i + 2);
+        si[7 - 2 * i] = g(grbuf, 4 * i + 4) - g(grbuf, 4 * i + 3);
+        co[2 + 2 * i] = -(g(grbuf, 4 * i + 3) + g(grbuf, 4 * i + 4));
+    }
+    l3_dct3_9(&mut co);
+    l3_dct3_9(&mut si);
+
+    si[1] = -si[1];
+    si[3] = -si[3];
+    si[5] = -si[5];
+    si[7] = -si[7];
+
+    for i in 0..9 {
+        let ovl = T::gather(&overlap[i..], 9);
+        let sum = co[i] * c(L3_IMDCT36_G_TWID9[9 + i]) + si[i] * c(L3_IMDCT36_G_TWID9[i]);
+        (co[i] * c(L3_IMDCT36_G_TWID9[i]) - si[i] * c(L3_IMDCT36_G_TWID9[9 + i])).scatter(&mut overlap[i..], 9);
+        (ovl * c(window[i]) - sum * c(window[9 + i])).scatter(&mut grbuf[i..], 18);
+        (ovl * c(window[9 + i]) + sum * c(window[i])).scatter(&mut grbuf[17 - i..], 18);
+    }
+}
+
 fn l3_imdct36(grbuf: &mut [f32], overlap: &mut [f32], window: &[f32; 18], nbands: usize) {
-    for (grbuf, overlap) in grbuf.chunks_exact_mut(18).zip(overlap.chunks_exact_mut(9)).take(nbands) {
-        let mut co = [0f32; 9];
-        let mut si = [0f32; 9];
-        co[0] = -grbuf[0];
-        si[0] = grbuf[17];
-        for i in 0..4 {
-            si[8 - 2 * i] = grbuf[4 * i + 1] - grbuf[4 * i + 2];
-            co[1 + 2 * i] = grbuf[4 * i + 1] + grbuf[4 * i + 2];
-            si[7 - 2 * i] = grbuf[4 * i + 4] - grbuf[4 * i + 3];
-            co[2 + 2 * i] = -(grbuf[4 * i + 3] + grbuf[4 * i + 4]);
-        }
-        l3_dct3_9(&mut co);
-        l3_dct3_9(&mut si);
-
-        si[1] = -si[1];
-        si[3] = -si[3];
-        si[5] = -si[5];
-        si[7] = -si[7];
-
-        for i in 0..9 {
-            let ovl = overlap[i];
-            let sum = co[i] * L3_IMDCT36_G_TWID9[9 + i] + si[i] * L3_IMDCT36_G_TWID9[i];
-            overlap[i] = co[i] * L3_IMDCT36_G_TWID9[i] - si[i] * L3_IMDCT36_G_TWID9[9 + i];
-            grbuf[i] = ovl * window[i] - sum * window[9 + i];
-            grbuf[17 - i] = ovl * window[9 + i] + sum * window[i];
-        }
+    let mut j = 0;
+    while j + 4 <= nbands {
+        l3_imdct36_bands::<F4>(&mut grbuf[18 * j..], &mut overlap[9 * j..], window);
+        j += 4;
+    }
+    while j < nbands {
+        l3_imdct36_bands::<f32>(&mut grbuf[18 * j..], &mut overlap[9 * j..], window);
+        j += 1;
     }
 }
 

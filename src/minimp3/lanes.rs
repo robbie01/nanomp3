@@ -21,6 +21,12 @@ pub(crate) trait Lanes:
     fn load(s: &[f32]) -> Self;
     /// Stores into the first `N` floats of `s`.
     fn store(self, s: &mut [f32]);
+    /// Loads `s[0], s[stride], s[2*stride], ...`.
+    fn gather(s: &[f32], stride: usize) -> Self;
+    /// Stores to `s[0], s[stride], s[2*stride], ...`.
+    fn scatter(self, s: &mut [f32], stride: usize);
+    /// Reverses the lane order.
+    fn rev(self) -> Self;
 }
 
 impl Lanes for f32 {
@@ -35,6 +41,18 @@ impl Lanes for f32 {
     #[inline(always)]
     fn store(self, s: &mut [f32]) {
         s[0] = self;
+    }
+    #[inline(always)]
+    fn gather(s: &[f32], _stride: usize) -> Self {
+        s[0]
+    }
+    #[inline(always)]
+    fn scatter(self, s: &mut [f32], _stride: usize) {
+        s[0] = self;
+    }
+    #[inline(always)]
+    fn rev(self) -> Self {
+        self
     }
 }
 
@@ -56,6 +74,23 @@ mod f32x4 {
         #[inline(always)]
         fn store(self, s: &mut [f32]) {
             s[..4].copy_from_slice(&self.to_array());
+        }
+        #[inline(always)]
+        fn gather(s: &[f32], stride: usize) -> Self {
+            F4::new([s[0], s[stride], s[2 * stride], s[3 * stride]])
+        }
+        #[inline(always)]
+        fn scatter(self, s: &mut [f32], stride: usize) {
+            let a = self.to_array();
+            s[3 * stride] = a[3];
+            s[2 * stride] = a[2];
+            s[stride] = a[1];
+            s[0] = a[0];
+        }
+        #[inline(always)]
+        fn rev(self) -> Self {
+            let [a, b, c, d] = self.to_array();
+            F4::new([d, c, b, a])
         }
     }
 }
@@ -122,6 +157,22 @@ mod f32x4 {
         #[inline(always)]
         fn store(self, s: &mut [f32]) {
             s[..4].copy_from_slice(&self.0);
+        }
+        #[inline(always)]
+        fn gather(s: &[f32], stride: usize) -> Self {
+            F4([s[0], s[stride], s[2 * stride], s[3 * stride]])
+        }
+        #[inline(always)]
+        fn scatter(self, s: &mut [f32], stride: usize) {
+            s[3 * stride] = self.0[3];
+            s[2 * stride] = self.0[2];
+            s[stride] = self.0[1];
+            s[0] = self.0[0];
+        }
+        #[inline(always)]
+        fn rev(self) -> Self {
+            let [a, b, c, d] = self.0;
+            F4([d, c, b, a])
         }
     }
 }
