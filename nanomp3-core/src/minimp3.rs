@@ -151,6 +151,26 @@ pub struct FrameInfo {
     pub hz: u32,
     pub layer: u8,
     pub bitrate_kbps: u32,
+    /// Why the last call produced the samples it did. Not part of C's struct.
+    pub status: Status,
+}
+
+/// The outcome of `mp3dec_decode_frame`, which C only conveys as "0 samples".
+#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
+pub enum Status {
+    /// Samples were decoded.
+    Decoded,
+    /// No frame was found; `frame_bytes` bytes of junk were skipped.
+    #[default]
+    NoFrame,
+    /// Only the header was parsed (`pcm == None`).
+    HeaderOnly,
+    /// The frame's side info or bitstream is invalid; the decoder resyncs.
+    Corrupt,
+    /// The frame needs bit-reservoir bytes from frames that weren't decoded.
+    ReservoirUnavailable,
+    /// A Layer I/II frame, and the `layer12` feature is off.
+    UnsupportedLayer,
 }
 
 /// Persistent decoder state (`mp3dec_t`).
@@ -1435,6 +1455,7 @@ pub fn mp3dec_decode_frame<S: Sample>(
         (i, frame_size) = mp3d_find_frame(mp3, &mut dec.free_format_bytes);
         if frame_size == 0 || i + frame_size > mp3_bytes {
             info.frame_bytes = i;
+            info.status = Status::NoFrame;
             return 0;
         }
     }
@@ -1449,6 +1470,7 @@ pub fn mp3dec_decode_frame<S: Sample>(
     info.bitrate_kbps = hdr.bitrate_kbps();
 
     let Some(pcm) = pcm else {
+        info.status = Status::HeaderOnly;
         return hdr.frame_samples() as usize;
     };
 
@@ -1460,9 +1482,16 @@ pub fn mp3dec_decode_frame<S: Sample>(
 
     if info.layer != 3 {
         #[cfg(feature = "layer12")]
-        return layer12::decode_frame(dec, scratch, hdr, &mut bs_frame, pcm, info.channels as usize, compat);
+        {
+            let n = layer12::decode_frame(dec, scratch, hdr, &mut bs_frame, pcm, info.channels as usize, compat);
+            info.status = if n == 0 { Status::Corrupt } else { Status::Decoded };
+            return n;
+        }
         #[cfg(not(feature = "layer12"))]
-        return 0;
+        {
+            info.status = Status::UnsupportedLayer;
+            return 0;
+        }
     }
 
     let nch = info.channels as usize;
@@ -1470,6 +1499,7 @@ pub fn mp3dec_decode_frame<S: Sample>(
     let main_data_begin = l3_read_side_info(&mut bs_frame, &mut gr_info, hdr);
     if main_data_begin < 0 || bs_frame.pos > bs_frame.limit {
         dec.header[0] = 0; // mp3dec_init
+        info.status = Status::Corrupt;
         return 0;
     }
 
@@ -1487,5 +1517,6 @@ pub fn mp3dec_decode_frame<S: Sample>(
         }
     }
     l3_save_reservoir(dec, &bs);
+    info.status = if success { Status::Decoded } else { Status::ReservoirUnavailable };
     success as usize * Header(dec.header).frame_samples() as usize
 }

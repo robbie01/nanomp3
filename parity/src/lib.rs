@@ -289,7 +289,7 @@ pub fn decode_rust<S: PcmSample>(input: &[u8], feed: Feed, minimp3_compat: bool)
     let mut dec = if minimp3_compat { nanomp3::Decoder::new_minimp3_compat() } else { nanomp3::Decoder::new() };
     run::<S>(input, feed, |mp3, pcm| {
         let (consumed, info) = dec.decode(mp3, pcm);
-        (consumed, info.map(|i| (i.samples_produced, i.channels.num(), i.sample_rate, i.bitrate)))
+        (consumed, info.ok().map(|i| (i.samples_produced, i.channels.num(), i.sample_rate, i.bitrate)))
     })
 }
 

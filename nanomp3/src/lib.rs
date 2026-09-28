@@ -62,7 +62,7 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-pub use nanomp3_core::{Channels, Decoder, FrameInfo, Sample, MAX_SAMPLES_PER_FRAME};
+pub use nanomp3_core::{Channels, DecodeError, Decoder, FrameInfo, Sample, MAX_SAMPLES_PER_FRAME};
 
 mod frames;
 mod tags;
