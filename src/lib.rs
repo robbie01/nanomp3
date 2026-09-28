@@ -1,4 +1,5 @@
 #![no_std]
+#![forbid(unsafe_code)]
 
 mod minimp3;
 
@@ -9,7 +10,7 @@ mod tests;
 pub const MAX_SAMPLES_PER_FRAME: usize = 1152*2;
 
 /// The core MP3 decoder, with no internal buffering.
-pub struct Decoder(minimp3::mp3dec_t);
+pub struct Decoder(minimp3::Mp3Dec);
 
 
 /// The channel formats that may be encoded in an MP3 frame.
@@ -42,7 +43,7 @@ pub struct FrameInfo {
 impl Decoder {
     /// Instantiates a `Decoder`.
     pub const fn new() -> Self {
-        Self(minimp3::mp3dec_t::new())
+        Self(minimp3::Mp3Dec::new())
     }
 
     /// Decode MP3 data into a buffer, returning the amount of MP3 data consumed and info about decoded samples.
@@ -54,27 +55,20 @@ impl Decoder {
     pub fn decode(&mut self, mp3: &[u8], pcm: &mut [f32]) -> (usize, Option<FrameInfo>) {
         assert!(pcm.len() >= MAX_SAMPLES_PER_FRAME, "pcm buffer too small");
 
-        let mut info = minimp3::mp3dec_frame_info_t::default();
-
-        let samples = unsafe { minimp3::mp3dec_decode_frame(
-            &mut self.0,
-            mp3,
-            pcm,
-            &mut info
-        ) };
+        let mut info = minimp3::FrameInfo::default();
+        let samples = minimp3::mp3dec_decode_frame(&mut self.0, mp3, Some(pcm), &mut info);
 
         (
-            info.frame_bytes.try_into().unwrap(),
-            (samples != 0).then(|| FrameInfo {
-                samples_produced: samples.try_into().unwrap(),
+            info.frame_bytes,
+            (samples != 0).then_some(FrameInfo {
+                samples_produced: samples,
                 channels: match info.channels {
                     1 => Channels::Mono,
-                    2 => Channels::Stereo,
-                    _ => unreachable!()
+                    _ => Channels::Stereo,
                 },
-                sample_rate: info.hz.try_into().unwrap(),
-                bitrate: info.bitrate_kbps.try_into().unwrap()
-            })
+                sample_rate: info.hz,
+                bitrate: info.bitrate_kbps,
+            }),
         )
     }
 }

@@ -142,7 +142,7 @@ pub fn decode_c(input: &[u8], feed: Feed, flavor: Flavor) -> Vec<Frame> {
     let mut dec = CDecoder::new(flavor);
     run(input, feed, |mp3, pcm| {
         let (samples, info) = dec.decode(mp3, pcm);
-        let info_out = (samples != 0).then(|| {
+        let info_out = (samples != 0).then_some({
             (samples, info.channels as u8, info.hz as u32, info.bitrate_kbps as u32)
         });
         Frame {
