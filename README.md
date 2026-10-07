@@ -1,3 +1,5 @@
+*(I’m aware that Claude-prose is grating to read, and I empathize with such concerns. A README rewrite is on the horizon. Please enjoy the library in the meantime.)*
+
 # nanomp3
 
 A pure Rust MPEG audio decoder (MP3, plus MP1/MP2): a safe, bit-exact port of [minimp3](https://github.com/lieff/minimp3) and its `minimp3_ex` helpers.
